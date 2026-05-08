@@ -1,0 +1,40 @@
+# One-shot migration runner. Triggered as a dependency of kuu-api.service —
+# `systemctl start kuu-api` runs migrations to the latest version, then
+# starts the API. Type=oneshot + RemainAfterExit=yes means a successful
+# run "stays" active so kuu-api proceeds; a failed migration blocks start.
+#
+# To run migrations on demand:
+#   sudo systemctl start kuu-migrate
+#   sudo systemctl status kuu-migrate     # check exit status
+#   sudo journalctl -u kuu-migrate -n 50  # see goose output
+
+[Unit]
+Description=kuu-api database migrations
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=kuu
+Group=kuu
+EnvironmentFile=/etc/kuu-api/secrets
+ExecStart=/usr/local/bin/kuu-migrate up
+
+# Hardening (same posture as kuu-api)
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

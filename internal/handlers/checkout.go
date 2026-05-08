@@ -1,14 +1,16 @@
 package handlers
 
-
 import (
 	"encoding/json"
 	"net/http"
 
 	"github.com/stripe/stripe-go/v82"
 	"github.com/stripe/stripe-go/v82/checkout/session"
+
+	"github.com/KentFarr/kuu-api/internal/plans"
 )
 
+const maxCheckoutBodyBytes = 4 << 10
 
 type CheckoutRequest struct {
 	Game    string `json:"game"`
@@ -20,16 +22,17 @@ type CheckoutResponse struct {
 }
 
 type CheckoutHandler struct {
-	StripeKey string
 	SuccessURL string
 	CancelURL  string
 }
 
-
-
 func (h *CheckoutHandler) HandleCheckout(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxCheckoutBodyBytes)
+
 	var req CheckoutRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
@@ -38,7 +41,17 @@ func (h *CheckoutHandler) HandleCheckout(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	stripe.Key = h.StripeKey
+	gameConfig, ok := plans.Games[req.Game]
+	if !ok || !gameConfig.Configured() {
+		http.Error(w, "unsupported game", http.StatusBadRequest)
+		return
+	}
+
+	plan := plans.FindByPriceID(req.PriceID)
+	if plan == nil {
+		http.Error(w, "unsupported price", http.StatusBadRequest)
+		return
+	}
 
 	params := &stripe.CheckoutSessionParams{
 		Mode: stripe.String(string(stripe.CheckoutSessionModeSubscription)),

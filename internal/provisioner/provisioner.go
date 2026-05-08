@@ -1,21 +1,42 @@
 package provisioner
 
 import (
+	"context"
+	"errors"
 	"fmt"
-	"log"
+	"time"
 
+	"github.com/KentFarr/kuu-api/internal/database"
+	"github.com/KentFarr/kuu-api/internal/email"
+	"github.com/KentFarr/kuu-api/internal/logging"
+	"github.com/KentFarr/kuu-api/internal/metrics"
 	"github.com/KentFarr/kuu-api/internal/plans"
 	"github.com/KentFarr/kuu-api/internal/pterodactyl"
 )
 
+const (
+	allocationRetryAttempts = 3
+	cleanupTimeout          = 30 * time.Second
+)
+
+var allocationRetryBackoff = []time.Duration{
+	250 * time.Millisecond,
+	1 * time.Second,
+	4 * time.Second,
+}
+
 type Provisioner struct {
 	PteroClient *pterodactyl.Client
+	DB          *database.DB
+	EmailQueue  *email.Queue
 	NodeID      int
 }
 
-func New(pteroClient *pterodactyl.Client, nodeID int) *Provisioner {
+func New(pteroClient *pterodactyl.Client, db *database.DB, emailQueue *email.Queue, nodeID int) *Provisioner {
 	return &Provisioner{
 		PteroClient: pteroClient,
+		DB:          db,
+		EmailQueue:  emailQueue,
 		NodeID:      nodeID,
 	}
 }
@@ -30,63 +51,272 @@ type ProvisionResult struct {
 	Port       int
 	Game       string
 	PlanName   string
+	NewUser    bool
 }
 
-func (p *Provisioner) ProvisionServer(email, game, priceID string) (*ProvisionResult, error) {
+// cleanupCtxFor returns a Background-rooted context with the standard
+// cleanup timeout, while preserving the request_id from the source ctx so
+// rollback log lines stitch up with the request that triggered them. We
+// can't reuse the request ctx itself because it may already be cancelled
+// by the time the deferred rollback runs.
+func cleanupCtxFor(src context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+	if id := logging.RequestIDFrom(src); id != "" {
+		ctx = logging.WithRequestID(ctx, id)
+	}
+	return ctx, cancel
+}
+
+func (p *Provisioner) ProvisionServer(ctx context.Context, customerEmail, game, priceID, stripeSubID, stripeCustomerID string) (result *ProvisionResult, retErr error) {
+	start := time.Now()
+	defer func() {
+		outcome := metrics.OutcomeOK
+		if retErr != nil {
+			outcome = metrics.OutcomeError
+		}
+		metrics.ProvisionDuration.WithLabelValues(outcome).Observe(time.Since(start).Seconds())
+	}()
+
+	logger := logging.FromContext(ctx)
+
 	plan := plans.FindByPriceID(priceID)
 	if plan == nil {
 		return nil, fmt.Errorf("unknown price ID: %s", priceID)
 	}
 
-	log.Printf("provisioning %s server (%s) for %s", game, plan.Name, email)
-
 	gameConfig, ok := plans.Games[game]
 	if !ok {
 		return nil, fmt.Errorf("unknown game: %s", game)
 	}
-
-	user, password, err := p.PteroClient.CreateUser(email)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create user: %w", err)
+	if !gameConfig.Configured() {
+		return nil, fmt.Errorf("game %s is not yet configured for provisioning", game)
 	}
 
-	log.Printf("created pterodactyl user: id=%d username=%s", user.ID, user.Username)
+	logger = logger.With("game", game, "plan", plan.Name, "email", customerEmail)
+	logger.Info("provisioning server")
 
-	alloc, err := p.PteroClient.FindFreeAllocation(p.NodeID)
+	customer, err := p.DB.GetCustomerByEmail(customerEmail)
 	if err != nil {
-		return nil, fmt.Errorf("failed to find free allocation: %w", err)
+		return nil, fmt.Errorf("failed to look up customer: %w", err)
 	}
 
-	log.Printf("found free allocation: id=%d port=%d", alloc.ID, alloc.Port)
+	var (
+		pteroUserID           int
+		pteroUsername         string
+		password              string
+		newUser               bool
+		createdPteroUser      bool
+		createdCustomerID     int
+		createdSubscriptionID int
+	)
 
-	serverName := fmt.Sprintf("%s-%s-%d", game, plan.Name, user.ID)
+	if customer != nil && customer.PterodactylUserID != nil && customer.PterodactylUsername != nil {
+		pteroUserID = *customer.PterodactylUserID
+		pteroUsername = *customer.PterodactylUsername
+		logger.Info("reusing existing pterodactyl user", "ptero_user_id", pteroUserID, "username", pteroUsername)
+	} else {
+		user, pwd, err := p.PteroClient.CreateUser(ctx, customerEmail)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create pterodactyl user: %w", err)
+		}
+		pteroUserID = user.ID
+		pteroUsername = user.Username
+		password = pwd
+		newUser = true
+		createdPteroUser = true
+		logger.Info("created pterodactyl user", "ptero_user_id", pteroUserID, "username", pteroUsername)
 
-	server, err := p.PteroClient.CreateServer(pterodactyl.CreateServerParams{
-		Name:         serverName,
-		UserID:       user.ID,
-		NestID:       gameConfig.NestID,
-		EggID:        gameConfig.EggID,
-		DockerImage:  gameConfig.DockerImage,
-		AllocationID: alloc.ID,
-		RAM:          plan.RAM,
-		CPU:          plan.CPU,
-		Disk:         plan.Disk,
-	})
+		defer func() {
+			if createdPteroUser {
+				cleanupCtx, cancel := cleanupCtxFor(ctx)
+				defer cancel()
+				clog := logging.FromContext(cleanupCtx)
+				if delErr := p.PteroClient.DeleteUser(cleanupCtx, pteroUserID); delErr != nil {
+					clog.Error("CRITICAL: failed to clean up orphaned pterodactyl user", "ptero_user_id", pteroUserID, "err", delErr)
+				} else {
+					clog.Info("cleaned up orphaned pterodactyl user", "ptero_user_id", pteroUserID)
+				}
+			}
+		}()
+	}
+
+	if customer == nil {
+		newCustomer, err := p.DB.CreateCustomer(customerEmail, pteroUserID, pteroUsername)
+		if err != nil {
+			return nil, fmt.Errorf("failed to store customer: %w", err)
+		}
+		customer = newCustomer
+		createdCustomerID = newCustomer.ID
+
+		defer func() {
+			if createdCustomerID != 0 {
+				if delErr := p.DB.DeleteCustomer(createdCustomerID); delErr != nil {
+					logger.Error("CRITICAL: failed to roll back customer row", "customer_id", createdCustomerID, "err", delErr)
+				} else {
+					logger.Info("rolled back customer row", "customer_id", createdCustomerID)
+				}
+			}
+		}()
+	}
+
+	if stripeCustomerID != "" {
+		if err := p.DB.UpdateStripeCustomerID(customer.ID, stripeCustomerID); err != nil {
+			logger.Warn("failed to update stripe customer id", "err", err)
+		}
+	}
+
+	sub, err := p.DB.CreateSubscription(customer.ID, stripeSubID, priceID, game)
+	if err != nil {
+		return nil, fmt.Errorf("failed to store subscription: %w", err)
+	}
+	createdSubscriptionID = sub.ID
+
+	defer func() {
+		if createdSubscriptionID != 0 {
+			if delErr := p.DB.DeleteSubscription(createdSubscriptionID); delErr != nil {
+				logger.Error("CRITICAL: failed to roll back subscription row", "subscription_id", createdSubscriptionID, "err", delErr)
+			} else {
+				logger.Info("rolled back subscription row", "subscription_id", createdSubscriptionID)
+			}
+		}
+	}()
+
+	serverName := fmt.Sprintf("%s-%s-%d", game, plan.Name, pteroUserID)
+	server, allocPort, err := p.createServerWithRetry(ctx, serverName, pteroUserID, gameConfig, plan)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create server: %w", err)
 	}
 
-	log.Printf("created server: id=%d name=%s", server.ID, server.Name)
+	createdServerID := server.ID
+	defer func() {
+		if createdServerID != 0 {
+			cleanupCtx, cancel := cleanupCtxFor(ctx)
+			defer cancel()
+			clog := logging.FromContext(cleanupCtx)
+			if delErr := p.PteroClient.DeleteServer(cleanupCtx, createdServerID); delErr != nil {
+				clog.Error("CRITICAL: failed to clean up orphaned pterodactyl server", "ptero_server_id", createdServerID, "err", delErr)
+			} else {
+				clog.Info("cleaned up orphaned pterodactyl server", "ptero_server_id", createdServerID)
+			}
+		}
+	}()
+
+	_, err = p.DB.CreateServer(
+		sub.ID, customer.ID, server.ID, p.NodeID,
+		allocPort, serverName, game, plan.Name,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to store server record: %w", err)
+	}
+
+	createdPteroUser = false
+	createdServerID = 0
+	createdCustomerID = 0
+	createdSubscriptionID = 0
+
+	if p.EmailQueue != nil && newUser {
+		subject, body := email.RenderWelcome(email.WelcomeData{
+			Username:   pteroUsername,
+			Password:   password,
+			ServerName: serverName,
+			Game:       game,
+			Port:       allocPort,
+		})
+		if err := p.EmailQueue.Enqueue(customerEmail, subject, body); err != nil {
+			logger.Warn("failed to enqueue welcome email", "err", err)
+		}
+	}
 
 	return &ProvisionResult{
-		UserID:     user.ID,
-		Username:   user.Username,
-		Email:      email,
+		UserID:     pteroUserID,
+		Username:   pteroUsername,
+		Email:      customerEmail,
 		Password:   password,
 		ServerID:   server.ID,
 		ServerName: serverName,
-		Port:       alloc.Port,
+		Port:       allocPort,
 		Game:       game,
 		PlanName:   plan.Name,
+		NewUser:    newUser,
 	}, nil
+}
+
+func (p *Provisioner) createServerWithRetry(ctx context.Context, serverName string, pteroUserID int, gameConfig plans.Game, plan *plans.Plan) (*pterodactyl.ServerAttributes, int, error) {
+	logger := logging.FromContext(ctx)
+
+	var lastErr error
+	for attempt := 1; attempt <= allocationRetryAttempts; attempt++ {
+		if attempt > 1 {
+			backoff := allocationRetryBackoff[min(attempt-2, len(allocationRetryBackoff)-1)]
+			select {
+			case <-ctx.Done():
+				return nil, 0, ctx.Err()
+			case <-time.After(backoff):
+			}
+		}
+
+		alloc, err := p.PteroClient.FindFreeAllocation(ctx, p.NodeID)
+		if err != nil {
+			lastErr = err
+			break
+		}
+		logger.Info("allocation attempt", "attempt", attempt, "allocation_id", alloc.ID, "port", alloc.Port)
+
+		server, err := p.PteroClient.CreateServer(ctx, pterodactyl.CreateServerParams{
+			Name:         serverName,
+			UserID:       pteroUserID,
+			NestID:       gameConfig.NestID,
+			EggID:        gameConfig.EggID,
+			DockerImage:  gameConfig.DockerImage,
+			Startup:      gameConfig.Startup,
+			Environment:  gameConfig.Environment,
+			AllocationID: alloc.ID,
+			RAM:          plan.RAM,
+			CPU:          plan.CPU,
+			Disk:         plan.Disk,
+		})
+		if err == nil {
+			logger.Info("created server", "ptero_server_id", server.ID, "server_name", server.Name)
+			return server, alloc.Port, nil
+		}
+
+		lastErr = err
+		var apiErr *pterodactyl.APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == 422 {
+			logger.Warn("allocation collided, retrying", "allocation_id", alloc.ID)
+			continue
+		}
+		break
+	}
+	return nil, 0, lastErr
+}
+
+func (p *Provisioner) SuspendServer(ctx context.Context, stripeSubID string) error {
+	logger := logging.FromContext(ctx).With("stripe_subscription_id", stripeSubID)
+	logger.Info("suspending server for subscription")
+
+	sub, err := p.DB.GetSubscriptionByStripeID(stripeSubID)
+	if err != nil {
+		return fmt.Errorf("subscription not found: %w", err)
+	}
+
+	server, err := p.DB.GetServerBySubscription(sub.ID)
+	if err != nil {
+		logger.Warn("server record not found for subscription", "subscription_id", sub.ID, "err", err)
+	} else if server.PterodactylServerID > 0 {
+		if err := p.PteroClient.SuspendServer(ctx, server.PterodactylServerID); err != nil {
+			return fmt.Errorf("failed to suspend pterodactyl server %d: %w", server.PterodactylServerID, err)
+		}
+	}
+
+	if err := p.DB.SuspendSubscription(stripeSubID); err != nil {
+		return fmt.Errorf("failed to suspend subscription record: %w", err)
+	}
+
+	if err := p.DB.SuspendServer(sub.ID); err != nil {
+		return fmt.Errorf("failed to suspend server record: %w", err)
+	}
+
+	logger.Info("server suspended for subscription")
+	return nil
 }

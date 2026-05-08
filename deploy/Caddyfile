@@ -1,0 +1,27 @@
+# Caddy config for kuu-api.
+#
+# Caddy listens on 80/443 and reverse-proxies to the kuu-api container on
+# port 8081 inside the compose network. TLS certificates are obtained
+# automatically from Let's Encrypt — DNS for $KUU_API_DOMAIN must already
+# point at this VPS before `docker compose up -d`.
+#
+# X-Forwarded-For is set by Caddy by default; kuu-api only honors it when
+# the request comes from a CIDR in TRUSTED_PROXY_CIDRS (172.16.0.0/12 by
+# default in docker-compose.yml — covers the default Docker bridge range).
+
+{$KUU_API_DOMAIN} {
+	encode zstd gzip
+
+	# Stripe webhooks must reach /api/webhook with the raw body intact.
+	# reverse_proxy preserves the body; do not add request transformations
+	# upstream of this route.
+	reverse_proxy kuu-api:8081 {
+		header_up Host {host}
+		header_up X-Real-IP {remote_host}
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}

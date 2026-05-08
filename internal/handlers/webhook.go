@@ -1,24 +1,33 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
-	"log"
 	"net/http"
 
 	"github.com/stripe/stripe-go/v82"
 	"github.com/stripe/stripe-go/v82/webhook"
 
+	"github.com/KentFarr/kuu-api/internal/database"
+	"github.com/KentFarr/kuu-api/internal/logging"
+	"github.com/KentFarr/kuu-api/internal/metrics"
 	"github.com/KentFarr/kuu-api/internal/provisioner"
 )
+
+const maxWebhookBodyBytes = 1 << 20
 
 type WebhookHandler struct {
 	WebhookSecret string
 	Provisioner   *provisioner.Provisioner
+	DB            *database.DB
 }
 
 func (h *WebhookHandler) HandleWebhook(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(r.Body)
+	logger := logging.FromContext(r.Context())
+
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxWebhookBodyBytes))
 	if err != nil {
 		http.Error(w, "failed to read body", http.StatusBadRequest)
 		return
@@ -27,76 +36,145 @@ func (h *WebhookHandler) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 	sigHeader := r.Header.Get("Stripe-Signature")
 	event, err := webhook.ConstructEvent(body, sigHeader, h.WebhookSecret)
 	if err != nil {
-		log.Printf("webhook signature verification failed: %v", err)
+		logger.Warn("webhook signature verification failed", "err", err)
 		http.Error(w, "invalid signature", http.StatusUnauthorized)
 		return
 	}
 
-	log.Printf("received webhook event: %s", event.Type)
+	logger = logger.With("event_id", event.ID, "event_type", string(event.Type))
 
+	claimed, err := h.DB.ClaimWebhookEvent(event.ID)
+	if err != nil {
+		logger.Error("failed to claim webhook event", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if !claimed {
+		logger.Info("event already processed, skipping")
+		metrics.WebhookEvents.WithLabelValues(string(event.Type), metrics.OutcomeSkipped).Inc()
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	logger.Info("processing webhook event")
+
+	ctx := r.Context()
+	var processErr error
+	outcome := metrics.OutcomeOK
 	switch event.Type {
 	case "checkout.session.completed":
-		h.handleCheckoutCompleted(event)
+		processErr = h.handleCheckoutCompleted(ctx, event)
 	case "customer.subscription.deleted":
-		h.handleSubscriptionCancelled(event)
+		processErr = h.handleSubscriptionCancelled(ctx, event)
 	case "invoice.payment_failed":
-		h.handlePaymentFailed(event)
+		processErr = h.handlePaymentFailed(ctx, event)
 	default:
-		log.Printf("unhandled event type: %s", event.Type)
+		logger.Info("unhandled event type")
+		outcome = metrics.OutcomeUnhandled
 	}
 
+	if processErr != nil {
+		logger.Error("webhook processing failed", "err", processErr)
+		if relErr := h.DB.ReleaseWebhookEvent(event.ID); relErr != nil {
+			logger.Error("failed to release webhook event for retry", "err", relErr)
+		}
+		metrics.WebhookEvents.WithLabelValues(string(event.Type), metrics.OutcomeError).Inc()
+		http.Error(w, "processing failed", http.StatusInternalServerError)
+		return
+	}
+
+	metrics.WebhookEvents.WithLabelValues(string(event.Type), outcome).Inc()
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{"status": "received"})
 }
 
-func (h *WebhookHandler) handleCheckoutCompleted(event stripe.Event) {
+func (h *WebhookHandler) handleCheckoutCompleted(ctx context.Context, event stripe.Event) error {
+	logger := logging.FromContext(ctx)
+
 	var session stripe.CheckoutSession
 	if err := json.Unmarshal(event.Data.Raw, &session); err != nil {
-		log.Printf("failed to parse checkout session: %v", err)
-		return
+		return fmt.Errorf("failed to unmarshal checkout session: %w", err)
 	}
 
-	customerEmail := session.CustomerDetails.Email
+	customerEmail := ""
+	if session.CustomerDetails != nil {
+		customerEmail = session.CustomerDetails.Email
+	}
+	if customerEmail == "" {
+		logger.Warn("checkout.session.completed missing customer email; skipping")
+		return nil
+	}
+
 	game := session.Metadata["game"]
 	priceID := session.Metadata["price_id"]
-	subscriptionID := session.Subscription.ID
+	subscriptionID := ""
+	stripeCustomerID := ""
 
-	log.Printf("new checkout completed: email=%s game=%s price=%s subscription=%s",
-		customerEmail, game, priceID, subscriptionID)
-
-	result, err := h.Provisioner.ProvisionServer(customerEmail, game, priceID)
-	if err != nil {
-		log.Printf("provisioning failed: %v", err)
-		return
+	if session.Subscription != nil {
+		subscriptionID = session.Subscription.ID
+	}
+	if session.Customer != nil {
+		stripeCustomerID = session.Customer.ID
 	}
 
-	log.Printf("server provisioned successfully: user=%s server=%s port=%d",
-		result.Username, result.ServerName, result.Port)
+	logger.Info("checkout completed",
+		"email", customerEmail,
+		"game", game,
+		"price_id", priceID,
+		"stripe_subscription_id", subscriptionID,
+	)
+
+	result, err := h.Provisioner.ProvisionServer(
+		ctx, customerEmail, game, priceID, subscriptionID, stripeCustomerID,
+	)
+	if err != nil {
+		return err
+	}
+
+	logger.Info("server provisioned",
+		"username", result.Username,
+		"server_name", result.ServerName,
+		"port", result.Port,
+	)
+	return nil
 }
 
+func (h *WebhookHandler) handleSubscriptionCancelled(ctx context.Context, event stripe.Event) error {
+	logger := logging.FromContext(ctx)
 
-func (h *WebhookHandler) handleSubscriptionCancelled(event stripe.Event) {
 	var sub stripe.Subscription
 	if err := json.Unmarshal(event.Data.Raw, &sub); err != nil {
-		log.Printf("failed to parse subscription: %v", err)
-		return
+		return fmt.Errorf("failed to unmarshal subscription: %w", err)
 	}
 
-	log.Printf("subscription cancelled: id=%s customer=%s",
-		sub.ID, sub.Customer.ID)
-
-	// TODO: call provisioner to suspend/delete server
+	logger.Info("subscription cancelled", "stripe_subscription_id", sub.ID)
+	return h.Provisioner.SuspendServer(ctx, sub.ID)
 }
 
-func (h *WebhookHandler) handlePaymentFailed(event stripe.Event) {
+func (h *WebhookHandler) handlePaymentFailed(ctx context.Context, event stripe.Event) error {
+	logger := logging.FromContext(ctx)
+
 	var invoice stripe.Invoice
 	if err := json.Unmarshal(event.Data.Raw, &invoice); err != nil {
-		log.Printf("failed to parse invoice: %v", err)
-		return
+		return fmt.Errorf("failed to unmarshal invoice: %w", err)
 	}
 
-	log.Printf("payment failed: customer=%s subscription=%s",
-		invoice.Customer.ID, invoice.Parent.SubscriptionDetails.Subscription.ID)
+	subID := ""
+	if invoice.Parent != nil && invoice.Parent.SubscriptionDetails != nil && invoice.Parent.SubscriptionDetails.Subscription != nil {
+		subID = invoice.Parent.SubscriptionDetails.Subscription.ID
+	}
 
-	// TODO: suspend server and notify customer
+	customerID := ""
+	if invoice.Customer != nil {
+		customerID = invoice.Customer.ID
+	}
+
+	logger.Warn("payment failed",
+		"stripe_customer_id", customerID,
+		"stripe_subscription_id", subID,
+	)
+
+	if subID == "" {
+		return nil
+	}
+	return h.Provisioner.SuspendServer(ctx, subID)
 }

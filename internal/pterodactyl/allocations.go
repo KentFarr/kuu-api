@@ -1,6 +1,7 @@
 package pterodactyl
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 )
@@ -19,10 +20,10 @@ type AllocationListResponse struct {
 	Data []AllocationData `json:"data"`
 }
 
-func (c *Client) FindFreeAllocation(nodeID int) (*AllocationAttributes, error) {
+func (c *Client) FindFreeAllocation(ctx context.Context, nodeID int) (*AllocationAttributes, error) {
 	path := fmt.Sprintf("/api/application/nodes/%d/allocations", nodeID)
 
-	respBytes, err := c.doRequest("GET", path, nil)
+	respBytes, err := c.doRequest(ctx, "GET", path, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list allocations: %w", err)
 	}

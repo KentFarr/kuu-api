@@ -1,0 +1,55 @@
+# systemd unit for running kuu-api directly on the host (alternative to
+# docker compose). Use this if you prefer a non-containerised deploy.
+#
+# Install:
+#   sudo useradd --system --home /var/lib/kuu-api --shell /usr/sbin/nologin kuu
+#   sudo install -d -o kuu -g kuu /var/lib/kuu-api
+#   sudo install -m 0755 ./kuu-api /usr/local/bin/kuu-api
+#   sudo install -d -o root -g kuu -m 0750 /etc/kuu-api
+#   sudo install -m 0640 -o root -g kuu .env /etc/kuu-api/secrets
+#   sudo cp deploy/systemd/kuu-api.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now kuu-api
+#
+# Run kuu-migrate (see kuu-migrate.service) BEFORE starting kuu-api after
+# any deploy that ships new migrations.
+
+[Unit]
+Description=kuu-api game server provisioning service
+After=network-online.target postgresql.service
+Wants=network-online.target
+Requires=kuu-migrate.service
+After=kuu-migrate.service
+
+[Service]
+Type=simple
+User=kuu
+Group=kuu
+WorkingDirectory=/var/lib/kuu-api
+EnvironmentFile=/etc/kuu-api/secrets
+ExecStart=/usr/local/bin/kuu-api
+Restart=on-failure
+RestartSec=5s
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+ReadWritePaths=/var/lib/kuu-api
+
+# stdout/stderr go to journald; structured slog JSON lines are preserved.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

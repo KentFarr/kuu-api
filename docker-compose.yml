@@ -1,0 +1,84 @@
+# kuu-api production-style compose file.
+#
+# Three services run continuously: postgres, kuu-api, caddy. One service
+# (migrate) is one-shot — invoke it on demand with:
+#   docker compose run --rm migrate up
+#
+# Required on the host before `docker compose up -d`:
+#   - A populated .env file (cp .env.example .env)
+#   - DNS pointing api.your-domain.tld at this VPS (for Caddy TLS)
+#   - Ports 80 and 443 open on the OVH firewall
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: kuu
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: kuu
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kuu -d kuu"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    # Bound to localhost only — Postgres should not be reachable from the
+    # public internet. kuu-api reaches it through the compose network.
+    ports:
+      - "127.0.0.1:5432:5432"
+
+  migrate:
+    build: .
+    profiles: ["tools"]
+    entrypoint: ["/usr/local/bin/kuu-migrate"]
+    environment:
+      DATABASE_URL: postgres://kuu:${POSTGRES_PASSWORD}@postgres:5432/kuu?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  kuu-api:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Override DATABASE_URL so it points at the compose-network postgres
+      # rather than whatever's in .env. Keeps the .env file portable.
+      DATABASE_URL: postgres://kuu:${POSTGRES_PASSWORD}@postgres:5432/kuu?sslmode=disable
+      PORT: "8081"
+      # Trust Caddy as the reverse proxy so X-Forwarded-For is honored.
+      # 172.16.0.0/12 covers the default Docker bridge network range.
+      TRUSTED_PROXY_CIDRS: "172.16.0.0/12"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    expose:
+      - "8081"
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/kuu-api", "-h"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    environment:
+      KUU_API_DOMAIN: ${KUU_API_DOMAIN:?KUU_API_DOMAIN is required (e.g. api.kuu.gg)}
+    depends_on:
+      - kuu-api
+
+volumes:
+  postgres-data:
+  caddy-data:
+  caddy-config:

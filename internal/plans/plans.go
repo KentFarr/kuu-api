@@ -1,29 +1,31 @@
 package plans
 
 import (
-	"os" 
+	"fmt"
+	"os"
 )
 
-
 type Plan struct {
-	Name	string
-	Price	int
-	CPU     int 
-	Disk    int 
-	PriceID string 
-	RAM 	int
+	Name    string
+	Price   int
+	CPU     int
+	Disk    int
+	PriceID string
+	RAM     int
 }
-
-
 
 type Game struct {
-	Name 	string
-	EggID	int
-	NestID	int
+	Name        string
+	EggID       int
+	NestID      int
 	DockerImage string
+	Startup     string
+	Environment map[string]string
 }
 
-
+func (g Game) Configured() bool {
+	return g.EggID != 0 && g.NestID != 0 && g.DockerImage != "" && g.Startup != ""
+}
 
 var Games = map[string]Game{
 	"minecraft": {
@@ -31,21 +33,20 @@ var Games = map[string]Game{
 		EggID:       1,
 		NestID:      1,
 		DockerImage: "ghcr.io/pterodactyl/yolks:java_21",
+		Startup:     "java -Xms128M -Xmx{{SERVER_MEMORY}}M -jar {{SERVER_JARFILE}}",
+		Environment: map[string]string{
+			"SERVER_JARFILE":  "server.jar",
+			"VANILLA_VERSION": "latest",
+			"BUILD_NUMBER":    "latest",
+		},
 	},
 	"rust": {
-		Name:        "Rust",
-		EggID:       0, // TODO: set after importing egg
-		NestID:      0,
-		DockerImage: "",
+		Name: "Rust",
 	},
 	"fivem": {
-		Name:        "FiveM",
-		EggID:       0, // TODO: set after importing egg
-		NestID:      0,
-		DockerImage: "",
+		Name: "FiveM",
 	},
 }
-
 
 func LoadPlans() []Plan {
 	return []Plan{
@@ -94,9 +95,27 @@ func LoadPlans() []Plan {
 	}
 }
 
+func ValidateConfigured() error {
+	var missing []string
+	for _, p := range LoadPlans() {
+		if p.PriceID == "" {
+			missing = append(missing, fmt.Sprintf("STRIPE_PRICE_%s", p.Name))
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("missing Stripe price env vars: %v", missing)
+	}
+	return nil
+}
 
 func FindByPriceID(priceID string) *Plan {
+	if priceID == "" {
+		return nil
+	}
 	for _, plan := range LoadPlans() {
+		if plan.PriceID == "" {
+			continue
+		}
 		if plan.PriceID == priceID {
 			return &plan
 		}
