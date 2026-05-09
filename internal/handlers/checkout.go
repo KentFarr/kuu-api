@@ -32,8 +32,9 @@ type CheckoutResponse struct {
 }
 
 type CheckoutHandler struct {
-	SuccessURL string
-	CancelURL  string
+	SuccessURL     string
+	CancelURL      string
+	StripeCouponID string
 }
 
 func (h *CheckoutHandler) HandleCheckout(w http.ResponseWriter, r *http.Request) {
@@ -102,7 +103,17 @@ func (h *CheckoutHandler) HandleCheckout(w http.ResponseWriter, r *http.Request)
 		},
 		SuccessURL: stripe.String(h.SuccessURL),
 		CancelURL:  stripe.String(h.CancelURL),
-		CustomFields: []*stripe.CheckoutSessionCustomFieldParams{
+	}
+
+	if h.StripeCouponID != "" {
+		params.Discounts = []*stripe.CheckoutSessionDiscountParams{
+			{
+				Coupon: stripe.String(h.StripeCouponID),
+			},
+		}
+	}
+
+	params.CustomFields = []*stripe.CheckoutSessionCustomFieldParams{
 			{
 				Key: stripe.String("username"),
 				Label: &stripe.CheckoutSessionCustomFieldLabelParams{

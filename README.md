@@ -103,6 +103,7 @@ deploy/
   Caddyfile       reverse-proxy config used by docker-compose
   systemd/        unit files for the non-Docker deploy path
 docs/
+  API.md          frontend integration guide (request shapes, catalog, error model)
   DEPLOYMENT.md   OVH VPS step-by-step
   OPERATIONS.md   day-2 runbooks
 docker-compose.yml   production compose stack (postgres + api + caddy)

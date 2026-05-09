@@ -28,6 +28,7 @@ type Config struct {
 	CORSAllowedOrigin   string
 	TrustedProxyCIDRs   []*net.IPNet
 	AdminBearerToken    string
+	StripeFirstMonthCouponID string
 }
 
 func Load() (*Config, error) {
@@ -65,6 +66,7 @@ func Load() (*Config, error) {
 		CORSAllowedOrigin:   getEnv("CORS_ALLOWED_ORIGIN", "https://kuu.gg"),
 		TrustedProxyCIDRs:   trustedProxies,
 		AdminBearerToken:    os.Getenv("ADMIN_BEARER_TOKEN"),
+		StripeFirstMonthCouponID: os.Getenv("STRIPE_FIRST_MONTH_COUPON_ID"),
 	}
 
 	required := map[string]string{

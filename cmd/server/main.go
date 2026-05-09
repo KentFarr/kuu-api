@@ -91,8 +91,9 @@ func main() {
 	prov := provisioner.New(pteroClient, db, emailQueue, cfg.NodeIDs)
 
 	checkout := &handlers.CheckoutHandler{
-		SuccessURL: cfg.CheckoutSuccessURL,
-		CancelURL:  cfg.CheckoutCancelURL,
+		SuccessURL:     cfg.CheckoutSuccessURL,
+		CancelURL:      cfg.CheckoutCancelURL,
+		StripeCouponID: cfg.StripeFirstMonthCouponID,
 	}
 
 	wh := &handlers.WebhookHandler{
