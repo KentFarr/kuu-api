@@ -168,6 +168,7 @@ func (h *CheckoutHandler) HandleCheckout(w http.ResponseWriter, r *http.Request)
 
 	s, err := session.New(params)
 	if err != nil {
+		fmt.Printf("STRIPE ERROR: failed to create checkout session: %v\n", err)
 		http.Error(w, "failed to create checkout session", http.StatusInternalServerError)
 		return
 	}
