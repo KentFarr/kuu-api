@@ -365,6 +365,11 @@ func (p *Provisioner) createServerWithRetry(ctx context.Context, serverName stri
 		}
 		appliedVersion = version
 
+		startup := variant.Startup
+		if variant.TuningHook != nil {
+			startup = variant.TuningHook(variant, plan.RAM)
+		}
+
 		logger.Info("allocation attempt",
 			"attempt", attempt,
 			"node_id", nodeID,
@@ -379,7 +384,7 @@ func (p *Provisioner) createServerWithRetry(ctx context.Context, serverName stri
 			NestID:        variant.NestID,
 			EggID:         variant.EggID,
 			DockerImage:   variant.DockerImage,
-			Startup:       variant.Startup,
+			Startup:       startup,
 			Environment:   env,
 			AllocationID:  alloc.ID,
 			RAM:           plan.RAM,

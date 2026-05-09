@@ -9,12 +9,14 @@ import (
 )
 
 type Plan struct {
-	Name    string
-	Price   int
-	CPU     int
-	Disk    int
-	PriceID string
-	RAM     int
+	Name          string
+	Price         int
+	CPU           int
+	Disk          int
+	PriceID       string
+	RAM           int
+	BackupLimit   int
+	DatabaseLimit int
 }
 
 // Game is a top-level user-facing game choice (e.g. "minecraft", "rust").
@@ -35,6 +37,11 @@ type GameVariant struct {
 	NestID      int
 	DockerImage string
 	Startup     string
+
+	// TuningHook allows variants to customize the Pterodactyl Startup string
+	// dynamically based on the plan (e.g. injecting Aikar's Flags for large
+	// RAM allocations).
+	TuningHook func(v GameVariant, ramMB int) string
 
 	// Environment is the static base env. ConfigureEnv layers per-server
 	// values (version selection, RCON password, port-derived vars) on top
@@ -114,6 +121,24 @@ func BuildEnvironment(v GameVariant, version string, allocPort int) (map[string]
 	return env, version, nil
 }
 
+// minecraftTuning injects Aikar's Flags (highly optimized GC) for servers
+// with 16GB (16384MB) of RAM or more. Smaller servers get the standard
+// optimized JVM flags.
+func minecraftTuning(v GameVariant, ramMB int) string {
+	if ramMB < 16384 {
+		return v.Startup
+	}
+
+	// Aikar's Flags for Paper/Forge (GC optimization for high memory)
+	aikarsFlags := "-XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:MaxGCPauseMillis=200 -XX:+UnlockExperimentalVMOptions -XX:+DisableExplicitGC -XX:+AlwaysPreTouch -XX:G1NewSizePercent=30 -XX:G1MaxNewSizePercent=40 -XX:G1HeapRegionSize=8M -XX:G1ReservePercent=20 -XX:G1HeapWastePercent=5 -XX:G1MixedGCCountTarget=4 -XX:InitiatingHeapOccupancyPercent=15 -XX:G1MixedGCLiveThresholdPercent=90 -XX:G1RSetUpdatingPauseTimePercent=5 -XX:SurvivorRatio=32 -XX:+PerfDisableSharedMem -XX:MaxTenuringThreshold=1"
+
+	if v.Name == "Paper" {
+		return "java -Xms128M -Xmx{{SERVER_MEMORY}}M " + aikarsFlags + " -Dterminal.jline=false -Dterminal.ansi=true -jar {{SERVER_JARFILE}}"
+	}
+	// Forge/Generic
+	return "java -Xms128M -Xmx{{SERVER_MEMORY}}M " + aikarsFlags + " -jar {{SERVER_JARFILE}}"
+}
+
 // rconPassword returns a 16-byte hex string suitable for RCON_PASS. We use
 // crypto/rand because RCON gives the holder full server control — anything
 // less than CSPRNG would be a foot-gun.
@@ -157,6 +182,7 @@ var Games = map[string]Game{
 				NestID:      1,
 				DockerImage: "ghcr.io/pterodactyl/yolks:java_21",
 				Startup:     "java -Xms128M -Xmx{{SERVER_MEMORY}}M -Dterminal.jline=false -Dterminal.ansi=true -jar {{SERVER_JARFILE}}",
+				TuningHook:  minecraftTuning,
 				Environment: map[string]string{
 					"SERVER_JARFILE": "server.jar",
 					"BUILD_NUMBER":   "latest",
@@ -170,6 +196,7 @@ var Games = map[string]Game{
 				NestID:      1,
 				DockerImage: "ghcr.io/pterodactyl/yolks:java_21",
 				Startup:     "java -Xms128M -Xmx{{SERVER_MEMORY}}M -jar {{SERVER_JARFILE}}",
+				TuningHook:  minecraftTuning,
 				Environment: map[string]string{
 					"SERVER_JARFILE": "server.jar",
 					"BUILD_TYPE":     "recommended",
@@ -279,75 +306,72 @@ func rustVariant(displayName, framework string) GameVariant {
 			"MAX_PLAYERS":     "40",
 			"SERVER_IMG":      "",
 			"SAVEINTERVAL":    "60",
-			type Plan struct {
-				Name          string
-				Price         int
-				CPU           int
-				Disk          int
-				PriceID       string
-				RAM           int
-				BackupLimit   int
-				DatabaseLimit int
-			}
-			...
-			func LoadPlans() []Plan {
-				return []Plan{
-					{
-						Name:          "2GB",
-						RAM:           2048,
-						CPU:           100,
-						Disk:          20480,
-						PriceID:       os.Getenv("STRIPE_PRICE_2GB"),
-						BackupLimit:   1,
-						DatabaseLimit: 0,
-					},
-					{
-						Name:          "4GB",
-						RAM:           4096,
-						CPU:           150,
-						Disk:          40960,
-						PriceID:       os.Getenv("STRIPE_PRICE_4GB"),
-						BackupLimit:   1,
-						DatabaseLimit: 0,
-					},
-					{
-						Name:          "8GB",
-						RAM:           8192,
-						CPU:           200,
-						Disk:          81920,
-						PriceID:       os.Getenv("STRIPE_PRICE_8GB"),
-						BackupLimit:   3,
-						DatabaseLimit: 1,
-					},
-					{
-						Name:          "16GB",
-						RAM:           16384,
-						CPU:           300,
-						Disk:          163840,
-						PriceID:       os.Getenv("STRIPE_PRICE_16GB"),
-						BackupLimit:   3,
-						DatabaseLimit: 1,
-					},
-					{
-						Name:          "24GB",
-						RAM:           24576,
-						CPU:           400,
-						Disk:          245760,
-						PriceID:       os.Getenv("STRIPE_PRICE_24GB"),
-						BackupLimit:   7,
-						DatabaseLimit: 2,
-					},
-					{
-						Name:          "32GB",
-						RAM:           32768,
-						CPU:           500,
-						Disk:          327680,
-						PriceID:       os.Getenv("STRIPE_PRICE_32GB"),
-						BackupLimit:   7,
-						DatabaseLimit: 2,
-					},
-				}
-			}
+			"ADDITIONAL_ARGS": "",
+			"SERVER_LOGO":     "",
+			"MAP_URL":         "",
+		},
+		ConfigureEnv: rustEnvOverlay,
+	}
+}
+
+func LoadPlans() []Plan {
+	return []Plan{
+		{
+			Name:          "2GB",
+			RAM:           2048,
+			CPU:           100,
+			Disk:          20480,
+			PriceID:       os.Getenv("STRIPE_PRICE_2GB"),
+			BackupLimit:   1,
+			DatabaseLimit: 0,
+		},
+		{
+			Name:          "4GB",
+			RAM:           4096,
+			CPU:           150,
+			Disk:          40960,
+			PriceID:       os.Getenv("STRIPE_PRICE_4GB"),
+			BackupLimit:   1,
+			DatabaseLimit: 0,
+		},
+		{
+			Name:          "8GB",
+			RAM:           8192,
+			CPU:           200,
+			Disk:          81920,
+			PriceID:       os.Getenv("STRIPE_PRICE_8GB"),
+			BackupLimit:   3,
+			DatabaseLimit: 1,
+		},
+		{
+			Name:          "16GB",
+			RAM:           16384,
+			CPU:           300,
+			Disk:          163840,
+			PriceID:       os.Getenv("STRIPE_PRICE_16GB"),
+			BackupLimit:   3,
+			DatabaseLimit: 1,
+		},
+		{
+			Name:          "24GB",
+			RAM:           24576,
+			CPU:           400,
+			Disk:          245760,
+			PriceID:       os.Getenv("STRIPE_PRICE_24GB"),
+			BackupLimit:   7,
+			DatabaseLimit: 2,
+		},
+		{
+			Name:          "32GB",
+			RAM:           32768,
+			CPU:           500,
+			Disk:          327680,
+			PriceID:       os.Getenv("STRIPE_PRICE_32GB"),
+			BackupLimit:   7,
+			DatabaseLimit: 2,
+		},
+	}
+}
 
 func ValidateConfigured() error {
 	var missing []string
