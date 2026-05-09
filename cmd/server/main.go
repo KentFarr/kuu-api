@@ -19,6 +19,7 @@ import (
 
 	"github.com/KentFarr/kuu-api/internal/config"
 	"github.com/KentFarr/kuu-api/internal/database"
+	"github.com/KentFarr/kuu-api/internal/dns"
 	"github.com/KentFarr/kuu-api/internal/email"
 	"github.com/KentFarr/kuu-api/internal/handlers"
 	"github.com/KentFarr/kuu-api/internal/logging"
@@ -88,7 +89,15 @@ func main() {
 		log.Println("email service not configured, skipping")
 	}
 
-	prov := provisioner.New(pteroClient, db, emailQueue, cfg.NodeIDs)
+	var dnsClient *dns.CloudflareClient
+	if cfg.CloudflareAPIToken != "" {
+		dnsClient = dns.NewCloudflareClient(cfg.CloudflareAPIToken, cfg.CloudflareZoneID, cfg.CloudflareDomain)
+		log.Println("cloudflare dns service configured")
+	} else {
+		log.Println("cloudflare dns service not configured, subdomains will not be automatically provisioned")
+	}
+
+	prov := provisioner.New(pteroClient, db, emailQueue, dnsClient, cfg.NodeIDs)
 
 	checkout := &handlers.CheckoutHandler{
 		SuccessURL:     cfg.CheckoutSuccessURL,

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/KentFarr/kuu-api/internal/database"
+	"github.com/KentFarr/kuu-api/internal/dns"
 	"github.com/KentFarr/kuu-api/internal/email"
 	"github.com/KentFarr/kuu-api/internal/logging"
 	"github.com/KentFarr/kuu-api/internal/metrics"
@@ -30,14 +31,16 @@ type Provisioner struct {
 	PteroClient *pterodactyl.Client
 	DB          *database.DB
 	EmailQueue  *email.Queue
+	DNSClient   *dns.CloudflareClient
 	NodeIDs     []int
 }
 
-func New(pteroClient *pterodactyl.Client, db *database.DB, emailQueue *email.Queue, nodeIDs []int) *Provisioner {
+func New(pteroClient *pterodactyl.Client, db *database.DB, emailQueue *email.Queue, dnsClient *dns.CloudflareClient, nodeIDs []int) *Provisioner {
 	return &Provisioner{
 		PteroClient: pteroClient,
 		DB:          db,
 		EmailQueue:  emailQueue,
+		DNSClient:   dnsClient,
 		NodeIDs:     nodeIDs,
 	}
 }
@@ -253,6 +256,18 @@ func (p *Provisioner) ProvisionServer(ctx context.Context, req Request) (result 
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to store server record: %w", err)
+	}
+
+	// DNS Automation: Create CNAME record if subdomain is requested
+	if req.Subdomain != "" && p.DNSClient != nil {
+		if err := p.DNSClient.CreateCNAME(ctx, req.Subdomain, nodeAddress); err != nil {
+			logger.Error("failed to create dns record", "subdomain", req.Subdomain, "err", err)
+			// We don't roll back the whole provision if DNS fails — the server is up
+			// and the user can still connect via the IP/node address. We just log
+			// the error so operators can fix it manually or trigger a retry.
+		} else {
+			logger.Info("dns record created", "subdomain", req.Subdomain, "target", nodeAddress)
+		}
 	}
 
 	pterodactyl.InvalidateNodeCache(chosenNodeID)

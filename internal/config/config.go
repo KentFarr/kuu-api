@@ -29,6 +29,9 @@ type Config struct {
 	TrustedProxyCIDRs   []*net.IPNet
 	AdminBearerToken    string
 	StripeFirstMonthCouponID string
+	CloudflareAPIToken  string
+	CloudflareZoneID    string
+	CloudflareDomain    string
 }
 
 func Load() (*Config, error) {
@@ -67,6 +70,9 @@ func Load() (*Config, error) {
 		TrustedProxyCIDRs:   trustedProxies,
 		AdminBearerToken:    os.Getenv("ADMIN_BEARER_TOKEN"),
 		StripeFirstMonthCouponID: os.Getenv("STRIPE_FIRST_MONTH_COUPON_ID"),
+		CloudflareAPIToken:  os.Getenv("CLOUDFLARE_API_TOKEN"),
+		CloudflareZoneID:    os.Getenv("CLOUDFLARE_ZONE_ID"),
+		CloudflareDomain:    getEnv("CLOUDFLARE_DOMAIN", "kuu.gg"),
 	}
 
 	required := map[string]string{
