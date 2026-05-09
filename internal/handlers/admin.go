@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/KentFarr/kuu-api/internal/database"
+	"github.com/KentFarr/kuu-api/internal/email"
 	"github.com/KentFarr/kuu-api/internal/logging"
 	"github.com/KentFarr/kuu-api/internal/pterodactyl"
 )
@@ -58,6 +59,34 @@ func (h *AdminHandler) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /admin/emails/{id}/retry", h.guard(h.retryEmail))
 	mux.HandleFunc("GET /admin/emails", h.guard(h.listPendingEmails))
 	mux.HandleFunc("GET /admin/reconciliation", h.guard(h.reconciliation))
+	mux.HandleFunc("POST /admin/test-email", h.guard(h.testEmail))
+}
+
+func (h *AdminHandler) testEmail(w http.ResponseWriter, r *http.Request) {
+	to := r.URL.Query().Get("to")
+	if to == "" {
+		http.Error(w, "query param 'to' is required", http.StatusBadRequest)
+		return
+	}
+
+	// Create dummy data
+	subject, body := email.RenderWelcome(email.WelcomeData{
+		Username:    "KuuTester",
+		Password:    "Test-Pass-123",
+		ServerName:  "Minecraft-Pro-123",
+		Game:        "Minecraft",
+		Port:        25565,
+		NodeAddress: "node1.kuu.gg",
+	})
+
+	// Use a temporary mailer from the DB to send immediately
+	// (assuming the worker is also running)
+	if _, err := h.DB.EnqueueEmail(to, subject, body); err != nil {
+		http.Error(w, "failed to enqueue test email: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"sent": true, "recipient": to, "note": "Email enqueued. Check logs for delivery status."})
 }
 
 func (h *AdminHandler) retryEmail(w http.ResponseWriter, r *http.Request) {
