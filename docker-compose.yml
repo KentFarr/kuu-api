@@ -75,6 +75,12 @@ services:
       - "443:443"
     volumes:
       - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Cloudflare Origin Certificate for $KUU_API_DOMAIN. The host path
+      # /etc/ssl/cloudflare must exist with origin.crt (0644) and
+      # origin.key (0600) before `docker compose up -d`. See
+      # docs/DEPLOYMENT.md § "Cloudflare Origin Certificate" for the
+      # generation steps.
+      - /etc/ssl/cloudflare:/etc/ssl/cloudflare:ro
       - caddy-data:/data
       - caddy-config:/config
     environment:

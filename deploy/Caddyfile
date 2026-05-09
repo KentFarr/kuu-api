@@ -1,15 +1,29 @@
 # Caddy config for kuu-api.
 #
 # Caddy listens on 80/443 and reverse-proxies to the kuu-api container on
-# port 8081 inside the compose network. TLS certificates are obtained
-# automatically from Let's Encrypt — DNS for $KUU_API_DOMAIN must already
-# point at this VPS before `docker compose up -d`.
+# port 8081 inside the compose network.
+#
+# TLS: we use a long-lived Cloudflare Origin Certificate rather than
+# Let's Encrypt because $KUU_API_DOMAIN sits behind Cloudflare's proxy
+# (orange cloud) and HTTP-01 challenges would be intercepted. Cloudflare
+# terminates the public TLS connection with its own edge cert and
+# re-encrypts to the origin using the cert we serve here. Cloudflare's
+# zone must be set to SSL/TLS mode "Full (strict)" — anything looser
+# defeats the purpose.
+#
+# The cert + key files are mounted read-only into the Caddy container
+# from /etc/ssl/cloudflare on the host. To rotate: replace both files
+# on the host (`sudo install -m 644 newcert.pem /etc/ssl/cloudflare/origin.crt`,
+# `sudo install -m 600 newkey.pem /etc/ssl/cloudflare/origin.key`) and
+# `docker compose restart caddy`.
 #
 # X-Forwarded-For is set by Caddy by default; kuu-api only honors it when
 # the request comes from a CIDR in TRUSTED_PROXY_CIDRS (172.16.0.0/12 by
 # default in docker-compose.yml — covers the default Docker bridge range).
 
 {$KUU_API_DOMAIN} {
+	tls /etc/ssl/cloudflare/origin.crt /etc/ssl/cloudflare/origin.key
+
 	encode zstd gzip
 
 	# Stripe webhooks must reach /api/webhook with the raw body intact.

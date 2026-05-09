@@ -133,10 +133,102 @@ In your DNS provider, create an `A` record:
 api.kuu.gg.   A   <your VPS public IPv4>
 ```
 
-Wait until `dig +short api.kuu.gg` returns the right IP from the VPS
-itself. Caddy needs DNS to resolve before it can finish the ACME
-challenge — if you skip ahead, the first start will hammer Let's Encrypt
-and may rate-limit you.
+You need to decide one thing here: **proxy through Cloudflare (orange
+cloud) or point DNS straight at the VPS (gray cloud).** Either is
+supported; the choice changes how TLS is provisioned.
+
+- **Gray cloud (direct).** DNS resolves to the VPS IP. Caddy provisions
+  a Let's Encrypt cert via HTTP-01 over port 80. Skip § 3a and use
+  Caddy's defaults.
+- **Orange cloud (Cloudflare proxy).** DNS resolves to Cloudflare anycast
+  IPs that proxy traffic to the VPS. HTTP-01 won't work because
+  Cloudflare intercepts port 80. You must provision a Cloudflare Origin
+  Certificate and serve that from Caddy — see § 3a.
+
+In either case, wait until `dig +short api.kuu.gg` returns the expected
+IP from the VPS itself before continuing. With Cloudflare proxy you'll
+see Cloudflare anycast IPs; with gray cloud you'll see the VPS public
+IP. Both are correct for their respective path.
+
+---
+
+## 3a. Cloudflare Origin Certificate (only if proxied)
+
+Skip this section if you chose gray cloud above.
+
+### Generate the cert
+
+In the Cloudflare dashboard for your zone:
+
+1. **SSL/TLS → Origin Server → Create Certificate**
+   - Private key type: ECC (smaller, faster handshake than RSA)
+   - Hostnames: include the `api.kuu.gg` you're deploying. A wildcard
+     like `*.kuu.gg` is fine if you also serve other subdomains.
+   - Validity: 15 years (default — these certs are private to your
+     origin and don't follow public CA validity rules).
+2. **SSL/TLS → Overview → set encryption mode to "Full (strict)".**
+   Without strict, Cloudflare will accept *any* cert from your origin
+   (including self-signed), defeating the purpose of using an origin
+   cert in the first place. Required.
+
+Cloudflare displays the certificate and private key once. Save both
+immediately — the cert is recoverable from the dashboard, the private
+key is not.
+
+### Install on the VPS
+
+```sh
+sudo install -d -o root -g root -m 0755 /etc/ssl/cloudflare
+sudo tee /etc/ssl/cloudflare/origin.crt > /dev/null <<'EOF'
+-----BEGIN CERTIFICATE-----
+... paste the cert from Cloudflare ...
+-----END CERTIFICATE-----
+EOF
+
+sudo tee /etc/ssl/cloudflare/origin.key > /dev/null <<'EOF'
+-----BEGIN EC PRIVATE KEY-----
+... paste the private key from Cloudflare ...
+-----END EC PRIVATE KEY-----
+EOF
+
+sudo chmod 644 /etc/ssl/cloudflare/origin.crt
+sudo chmod 600 /etc/ssl/cloudflare/origin.key
+```
+
+`docker-compose.yml` already mounts `/etc/ssl/cloudflare` read-only into
+the Caddy container, and the bundled `deploy/Caddyfile` already serves
+the cert from that path with `tls /etc/ssl/cloudflare/origin.crt …`. No
+Caddy edits needed.
+
+### Bot Fight Mode and the API
+
+While you're in the Cloudflare dashboard, exempt `api.kuu.gg` from
+Bot Fight Mode and Browser Integrity Check. The API is already
+authenticated (Stripe webhook signatures + bearer token on `/admin/*`),
+and Cloudflare's bot heuristics produce false positives that look
+identical to a real outage.
+
+**Security → Bots → Bot Fight Mode** — turn off, **or** add a WAF
+custom rule:
+
+```text
+When (http.host eq "api.kuu.gg")
+Then Skip: Bot Fight Mode, Browser Integrity Check
+```
+
+### Rotating the origin cert
+
+Origin certs are 15 years by default; in practice you'll rotate when
+the private key is compromised or when you re-architect the
+Cloudflare zone. To rotate:
+
+```sh
+sudo install -m 644 newcert.pem /etc/ssl/cloudflare/origin.crt
+sudo install -m 600 newkey.pem  /etc/ssl/cloudflare/origin.key
+docker compose restart caddy
+```
+
+Caddy reloads the cert on restart; no kuu-api restart needed.
 
 ---
 
@@ -270,16 +362,25 @@ docker compose ps
 Expected: `postgres`, `kuu-api`, `caddy` all `healthy` (or `running` for
 caddy, which has no healthcheck).
 
-Watch Caddy obtain a certificate:
+Watch Caddy come up:
 
 ```sh
 docker compose logs -f caddy
 ```
 
-You're looking for a line like
-`certificate obtained successfully ... identifier: api.kuu.gg`. If you see
-ACME 4xx errors, DNS hasn't propagated or port 80/443 isn't open — fix
-those before retrying or you will burn through Let's Encrypt's rate limit.
+What to look for, depending on the TLS path you chose in § 3:
+
+- **Gray cloud / Let's Encrypt:** a line like
+  `certificate obtained successfully ... identifier: api.kuu.gg`. If you
+  see ACME 4xx errors, DNS hasn't propagated or port 80/443 isn't open
+  — fix those before retrying or you will burn through Let's Encrypt's
+  rate limit.
+- **Orange cloud / origin cert:** Caddy logs `serving initial
+  configuration` and starts immediately. There is no ACME flow because
+  the cert came from Cloudflare. If you see `error loading TLS
+  certificate ... no such file`, the host bind mount under
+  `/etc/ssl/cloudflare` is wrong or the files were never written —
+  recheck § 3a.
 
 Smoke test from your laptop:
 
