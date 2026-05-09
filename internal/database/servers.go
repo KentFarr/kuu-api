@@ -93,3 +93,30 @@ func (db *DB) ListServerPteroIDs(nodeID int) ([]int, error) {
 	}
 	return ids, nil
 }
+
+// ListReapableServers returns suspended servers whose subscription was
+// cancelled before cutoff — i.e. eligible for hard deletion under the
+// grace-period policy. Subscription and customer rows are intentionally
+// not joined in: the reaper only deletes the server resource, leaving
+// billing/audit history intact.
+func (db *DB) ListReapableServers(cutoff time.Time) ([]Server, error) {
+	var servers []Server
+	err := db.conn.Select(&servers,
+		`SELECT s.* FROM servers s
+		 JOIN subscriptions sub ON sub.id = s.subscription_id
+		 WHERE s.status = 'suspended'
+		   AND sub.status = 'suspended'
+		   AND sub.cancelled_at IS NOT NULL
+		   AND sub.cancelled_at < $1`,
+		cutoff,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list reapable servers: %w", err)
+	}
+	return servers, nil
+}
+
+func (db *DB) DeleteServerByID(id int) error {
+	_, err := db.conn.Exec("DELETE FROM servers WHERE id = $1", id)
+	return err
+}

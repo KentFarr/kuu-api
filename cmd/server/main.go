@@ -130,6 +130,13 @@ func main() {
 		cleaner.Run(ctx)
 	}()
 
+	reaper := provisioner.NewReaper(prov)
+	workers.Add(1)
+	go func() {
+		defer workers.Done()
+		reaper.Run(ctx)
+	}()
+
 	dbStats := &metrics.DBStatsCollector{DB: db.SQL()}
 	workers.Add(1)
 	go func() {
