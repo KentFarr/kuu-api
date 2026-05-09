@@ -85,7 +85,7 @@ Connect: %s:%d
 Pro Tip: For security, we recommend changing your password under 'Account Settings' after your first login.
 
 Need help?
-Join our Discord for 24/7 support: https://discord.gg/kuu
+Join our Discord for 24/7 support: https://discord.gg/xw32CuTk6H
 Or simply reply to this email—a real person will get back to you.
 
 Happy gaming,
