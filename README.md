@@ -62,9 +62,19 @@ Currently exposed:
 - **Rust** — `vanilla` (default), `oxide`, `carbon`. Selected via the
   `FRAMEWORK` env var. There is no user-selectable version. RCON password
   and `QUERY_PORT/RCON_PORT/APP_PORT` are derived per server at provision.
-- **FiveM** — stub. The egg has not been imported on the panel yet, so
-  the variant table reports `Configured() == false` and `/api/checkout`
-  rejects requests for it.
+- **FiveM** — single `vanilla` variant. Accepts an optional `version`
+  (e.g. `recommended` or a build like `6013-d8ae399d`) bound to
+  `FIVEM_VERSION`. **Customer must replace the `FIVEM_LICENSE` placeholder
+  in the panel before first start** — the egg requires a per-customer
+  key from the cfx.re portal that we can't generate. txAdmin is disabled
+  by default; flip `TXADMIN_ENABLE=1` in the panel to turn it on.
+- **Garry's Mod** — single `vanilla` variant. Defaults to the `sandbox`
+  gamemode on `gm_flatgrass`. No version field. The optional
+  `STEAM_TOKEN` (32-char alphanumeric) is left empty so the server is
+  unlisted by default — customer fills it in panel to appear in the
+  public browser. Other gamemodes (TTT, DarkRP, etc.) are a one-line
+  `GAMEMODE` change in the panel; promote them to first-class variants
+  if there's demand.
 
 Adding a new game or variant is a code change in
 [internal/plans/plans.go](internal/plans/plans.go) — the table is the

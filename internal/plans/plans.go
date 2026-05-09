@@ -193,12 +193,69 @@ var Games = map[string]Game{
 		},
 	},
 
-	// FiveM has no built-in Pterodactyl egg. Import one from
-	// github.com/parkervcp/eggs (game_eggs/steamcmd_servers/fivem) into
-	// the panel, then fill in the EggID/NestID/DockerImage/Startup here.
+	// Nest 5 / Egg 15 is FiveM (parkervcp/eggs imported into its own
+	// "GTAV" nest). The egg's startup uses {{server.build.default.port}}
+	// from Pterodactyl's allocation, so no port-offset overlay is
+	// needed. STEAM_WEBAPIKEY is intentionally the literal string "none"
+	// — the egg accepts that as "auth disabled" and the schema rejects
+	// empty strings. FIVEM_LICENSE is per-customer and must be replaced
+	// in the panel before first start; we ship a placeholder so panel
+	// validation accepts the create call.
 	"fivem": {
-		Name:     "FiveM",
-		Variants: map[string]GameVariant{},
+		Name:           "FiveM",
+		DefaultVariant: "vanilla",
+		Variants: map[string]GameVariant{
+			"vanilla": {
+				Name:        "FiveM",
+				EggID:       15,
+				NestID:      5,
+				DockerImage: "ghcr.io/ptero-eggs/yolks:debian",
+				Startup:     `$(pwd)/alpine/opt/cfx-server/ld-musl-x86_64.so.1 --library-path "$(pwd)/alpine/usr/lib/v8/:$(pwd)/alpine/lib/:$(pwd)/alpine/usr/lib/" -- $(pwd)/alpine/opt/cfx-server/FXServer +set citizen_dir $(pwd)/alpine/opt/cfx-server/citizen/ +set sv_licenseKey {{FIVEM_LICENSE}} +set steam_webApiKey {{STEAM_WEBAPIKEY}} +set sv_maxplayers {{MAX_PLAYERS}} $( [ "$TXADMIN_ENABLE" == "1" ] || printf %s '+exec server.cfg' )`,
+				Environment: map[string]string{
+					"FIVEM_LICENSE":    "set-in-panel-before-start",
+					"STEAM_WEBAPIKEY":  "none",
+					"SERVER_HOSTNAME":  "Kuu FiveM Server",
+					"MAX_PLAYERS":      "48",
+					"TXHOST_TXA_PORT":  "40120",
+					"TXADMIN_ENABLE":   "0",
+					"TXHOST_GAME_NAME": "fivem",
+					"GAME_TYPE":        "",
+					"TXHOST_DATA_PATH": "/home/container/txData",
+					"DOWNLOAD_URL":     "",
+				},
+				VersionField:   "FIVEM_VERSION",
+				VersionDefault: "recommended",
+			},
+		},
+	},
+
+	// Nest 6 / Egg 16 is Garry's Mod (parkervcp/eggs imported into its
+	// own "Gmod" nest, distinct from the legacy nest 2 / egg 8). One
+	// variant for now — gamemodes (sandbox / TTT / DarkRP / etc.) ride
+	// on the GAMEMODE env which the customer can change in the panel.
+	// Promote any of those to a top-level variant if we see real demand.
+	"gmod": {
+		Name:           "Garry's Mod",
+		DefaultVariant: "vanilla",
+		Variants: map[string]GameVariant{
+			"vanilla": {
+				Name:        "Garry's Mod",
+				EggID:       16,
+				NestID:      6,
+				DockerImage: "ghcr.io/ptero-eggs/games:source",
+				Startup:     `./srcds_run -game garrysmod -console -port {{SERVER_PORT}} +ip 0.0.0.0 +host_workshop_collection {{WORKSHOP_ID}} +map {{SRCDS_MAP}} +gamemode {{GAMEMODE}} -strictportbind -norestart +sv_setsteamaccount {{STEAM_TOKEN}} +maxplayers {{MAX_PLAYERS}}  -tickrate {{TICKRATE}}  $( [ "$LUA_REFRESH" == "1" ] || printf %s '-disableluarefresh' )`,
+				Environment: map[string]string{
+					"SRCDS_MAP":   "gm_flatgrass",
+					"STEAM_TOKEN": "",
+					"SRCDS_APPID": "4020",
+					"WORKSHOP_ID": "",
+					"GAMEMODE":    "sandbox",
+					"MAX_PLAYERS": "32",
+					"TICKRATE":    "22",
+					"LUA_REFRESH": "0",
+				},
+			},
+		},
 	},
 }
 
