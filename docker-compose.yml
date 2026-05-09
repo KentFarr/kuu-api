@@ -52,12 +52,23 @@ services:
       # rather than whatever's in .env. Keeps the .env file portable.
       DATABASE_URL: postgres://kuu:${POSTGRES_PASSWORD}@postgres:5432/kuu?sslmode=disable
       PORT: "8081"
-      # Trust Caddy as the reverse proxy so X-Forwarded-For is honored.
-      # 172.16.0.0/12 covers the default Docker bridge network range.
-      TRUSTED_PROXY_CIDRS: "172.16.0.0/12"
+      # Trust the reverse proxy so X-Forwarded-For is honored. The default
+      # covers both layouts the deploy supports: Caddy on the docker bridge
+      # (172.16.0.0/12 covers Docker's default bridge ranges) and an
+      # external host-side reverse proxy (nginx, traefik, etc.) reaching
+      # the API through the host loopback. .env may override this.
+      TRUSTED_PROXY_CIDRS: "172.16.0.0/12,127.0.0.1/32"
     depends_on:
       postgres:
         condition: service_healthy
+    # Bind to localhost only on the host so an external reverse proxy
+    # (e.g. an existing nginx serving other sites on the same VPS) can
+    # reach the API at 127.0.0.1:8081 without exposing it to the public
+    # internet. The bundled Caddy container reaches the API over the
+    # docker bridge using the service DNS name `kuu-api:8081` and is
+    # unaffected by this binding.
+    ports:
+      - "127.0.0.1:8081:8081"
     expose:
       - "8081"
     healthcheck:
@@ -67,8 +78,16 @@ services:
       retries: 3
       start_period: 5s
 
+  # Bundled Caddy. Use this only when the host has no existing reverse
+  # proxy on 80/443 — for example, a brand-new VPS dedicated to kuu-api.
+  # Gated behind the "caddy" profile so a `docker compose up -d` on a
+  # host that already runs nginx/traefik/etc. doesn't fail trying to bind
+  # ports already in use. Bring up explicitly with:
+  #   docker compose --profile caddy up -d caddy
+  # See docs/DEPLOYMENT.md for the external-reverse-proxy alternative.
   caddy:
     image: caddy:2-alpine
+    profiles: ["caddy"]
     restart: unless-stopped
     ports:
       - "80:80"

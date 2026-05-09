@@ -354,15 +354,93 @@ applied.
 
 ## 8. Bring up the stack
 
+The deploy supports two reverse-proxy layouts; pick one based on what's
+already running on the host.
+
+### 8a. Bundled Caddy (fresh VPS, nothing else on 80/443)
+
 ```sh
-docker compose up -d
+docker compose --profile caddy up -d
 docker compose ps
 ```
 
 Expected: `postgres`, `kuu-api`, `caddy` all `healthy` (or `running` for
 caddy, which has no healthcheck).
 
-Watch Caddy come up:
+The bundled Caddy lives behind the `caddy` profile so a plain
+`docker compose up -d` on a host that already runs nginx/traefik will
+not collide on port 80/443. If you forget the `--profile caddy` flag,
+`postgres` and `kuu-api` come up but Caddy doesn't, and `api.kuu.gg`
+won't be reachable from the public internet — you'd just get the API
+on `127.0.0.1:8081` on the host.
+
+### 8b. External reverse proxy (nginx, traefik, existing on host)
+
+If the host already terminates TLS for other sites (e.g. nginx serving
+your marketing page), don't run the bundled Caddy. Instead bring up the
+API + DB only and let your existing reverse proxy add an `api.kuu.gg`
+site that forwards to `127.0.0.1:8081`:
+
+```sh
+docker compose up -d postgres kuu-api
+docker compose ps
+```
+
+`kuu-api` binds to `127.0.0.1:8081` on the host (set in
+`docker-compose.yml`), so it's reachable from the host's nginx/traefik
+but not from the public internet directly. Make sure
+`TRUSTED_PROXY_CIDRS` in `.env` includes `127.0.0.1/32` (the default
+already does) so kuu-api honors `X-Forwarded-For` from the host-side
+proxy.
+
+A minimal nginx site that pairs cleanly with a Cloudflare Origin
+Certificate (matching the Caddy path in § 3a) looks like this. Save it
+as `/etc/nginx/sites-available/api.kuu.gg`, symlink into
+`sites-enabled`, then `sudo nginx -t && sudo systemctl reload nginx`.
+
+```nginx
+server {
+    listen 80;
+    listen [::]:80;
+    server_name api.kuu.gg;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name api.kuu.gg;
+
+    ssl_certificate     /etc/ssl/cloudflare/origin.crt;
+    ssl_certificate_key /etc/ssl/cloudflare/origin.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+
+    # Stripe webhooks are signed against the raw body; do not modify it.
+    # nginx's defaults preserve the body fine — just don't add gzip on
+    # the request side or any rewriting modules in the request pipeline.
+    client_max_body_size 1m;
+
+    location / {
+        proxy_pass         http://127.0.0.1:8081;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_read_timeout 60s;
+    }
+}
+```
+
+Verify connectivity from the host before adding the nginx site:
+
+```sh
+curl -fsS http://127.0.0.1:8081/livez
+```
+
+### 8c. Verifying TLS startup
+
+If you used § 8a (bundled Caddy):
 
 ```sh
 docker compose logs -f caddy
@@ -382,7 +460,18 @@ What to look for, depending on the TLS path you chose in § 3:
   `/etc/ssl/cloudflare` is wrong or the files were never written —
   recheck § 3a.
 
-Smoke test from your laptop:
+If you used § 8b (external nginx), watch the nginx error log instead:
+
+```sh
+sudo tail -f /var/log/nginx/error.log
+```
+
+You should see a clean reload, no warnings about missing
+`ssl_certificate`. Curl `https://api.kuu.gg/livez` from your laptop;
+errors here usually mean the cert path in the nginx config is wrong or
+the file permissions are blocking nginx from reading the key.
+
+### 8d. Smoke test from your laptop
 
 ```sh
 curl https://api.kuu.gg/livez   # → "ok"
