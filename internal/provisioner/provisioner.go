@@ -217,7 +217,7 @@ func (p *Provisioner) ProvisionServer(ctx context.Context, req Request) (result 
 	}()
 
 	serverName := fmt.Sprintf("%s-%s-%d", req.Game, plan.Name, pteroUserID)
-	server, allocPort, chosenNodeID, resolvedVersion, err := p.createServerWithRetry(ctx, serverName, pteroUserID, variant, req.Version, plan)
+	server, allocPort, chosenNodeID, nodeAddress, resolvedVersion, err := p.createServerWithRetry(ctx, serverName, pteroUserID, variant, req.Version, plan)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create server: %w", err)
 	}
@@ -262,11 +262,12 @@ func (p *Provisioner) ProvisionServer(ctx context.Context, req Request) (result 
 
 	if p.EmailQueue != nil && newUser {
 		subject, body := email.RenderWelcome(email.WelcomeData{
-			Username:   pteroUsername,
-			Password:   password,
-			ServerName: serverName,
-			Game:       req.Game,
-			Port:       allocPort,
+			Username:    pteroUsername,
+			Password:    password,
+			ServerName:  serverName,
+			Game:        req.Game,
+			Port:        allocPort,
+			NodeAddress: nodeAddress,
 		})
 		if err := p.EmailQueue.Enqueue(req.CustomerEmail, subject, body); err != nil {
 			logger.Warn("failed to enqueue welcome email", "err", err)
@@ -289,19 +290,20 @@ func (p *Provisioner) ProvisionServer(ctx context.Context, req Request) (result 
 	}, nil
 }
 
-func (p *Provisioner) createServerWithRetry(ctx context.Context, serverName string, pteroUserID int, variant plans.GameVariant, requestedVersion string, plan *plans.Plan) (*pterodactyl.ServerAttributes, int, int, string, error) {
+func (p *Provisioner) createServerWithRetry(ctx context.Context, serverName string, pteroUserID int, variant plans.GameVariant, requestedVersion string, plan *plans.Plan) (*pterodactyl.ServerAttributes, int, int, string, string, error) {
 	logger := logging.FromContext(ctx)
 
 	var (
 		lastErr         error
 		appliedVersion  string
+		nodeAddress     string
 	)
 	for attempt := 1; attempt <= allocationRetryAttempts; attempt++ {
 		if attempt > 1 {
 			backoff := allocationRetryBackoff[min(attempt-2, len(allocationRetryBackoff)-1)]
 			select {
 			case <-ctx.Done():
-				return nil, 0, 0, "", ctx.Err()
+				return nil, 0, 0, "", "", ctx.Err()
 			case <-time.After(backoff):
 			}
 		}
@@ -309,13 +311,17 @@ func (p *Provisioner) createServerWithRetry(ctx context.Context, serverName stri
 		// Re-pick the node every attempt — a 422 collision often means
 		// the node we picked just filled up; staying on it would burn
 		// every retry on the same hot node.
-		nodeID, _, pickErr := p.PteroClient.PickLeastLoadedNode(ctx, p.NodeIDs, plan.RAM)
+		nodeID, util, pickErr := p.PteroClient.PickLeastLoadedNode(ctx, p.NodeIDs, plan.RAM)
 		if pickErr != nil {
 			lastErr = pickErr
 			if errors.Is(pickErr, pterodactyl.ErrNoCapacity) {
 				break
 			}
 			continue
+		}
+
+		if util != nil {
+			nodeAddress = util.FQDN
 		}
 
 		alloc, err := p.PteroClient.FindFreeAllocation(ctx, nodeID)
@@ -364,7 +370,7 @@ func (p *Provisioner) createServerWithRetry(ctx context.Context, serverName stri
 				"node_id", nodeID,
 				"version", version,
 			)
-			return server, alloc.Port, nodeID, version, nil
+			return server, alloc.Port, nodeID, nodeAddress, version, nil
 		}
 
 		lastErr = err
@@ -376,7 +382,7 @@ func (p *Provisioner) createServerWithRetry(ctx context.Context, serverName stri
 		}
 		break
 	}
-	return nil, 0, 0, appliedVersion, lastErr
+	return nil, 0, 0, nodeAddress, appliedVersion, lastErr
 }
 
 func (p *Provisioner) SuspendServer(ctx context.Context, stripeSubID string) error {

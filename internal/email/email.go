@@ -48,39 +48,53 @@ func validRecipient(addr string) bool {
 // email. Decoupling rendering from sending lets the persisted email queue
 // store the final subject + body and replay them verbatim on retry.
 type WelcomeData struct {
-	Username   string
-	Password   string
-	ServerName string
-	Game       string
-	Port       int
+	Username    string
+	Password    string
+	ServerName  string
+	Game        string
+	Port        int
+	NodeAddress string
 }
 
 // RenderWelcome produces the (subject, body) pair for a welcome email. The
 // body interpolates user-controlled values, but every field that lands in a
 // header is run through sanitizeHeader to neutralize CRLF injection.
 func RenderWelcome(d WelcomeData) (subject, body string) {
-	subject = sanitizeHeader("Your Kuu server is ready")
-	body = fmt.Sprintf(`Welcome to Kuu!
+	subject = sanitizeHeader("Your Kuu server is ready — Let's play!")
+	
+	nodeAddr := d.NodeAddress
+	if nodeAddr == "" {
+		nodeAddr = "node1.kuu.gg" // Fallback
+	}
 
-Your %s server is live and ready to play.
+	body = fmt.Sprintf(`Welcome to Kuu,
 
-Panel: https://panel.kuu.gg
+We've finished provisioning your high-performance %s server. It's live and ready for your first login.
+
+---
+YOUR CREDENTIALS
+Panel:    https://panel.kuu.gg
 Username: %s
 Password: %s
+---
 
-Server name: %s
-Connect: node1.kuu.gg:%d
+SERVER DETAILS
+Name:    %s
+Connect: %s:%d
 
-You can change your username and password anytime in your Pterodactyl panel
-under Account Settings. Please change your password after your first login.
+Pro Tip: For security, we recommend changing your password under 'Account Settings' after your first login.
 
-Questions? Join our Discord or reply to this email.
+Need help?
+Join our Discord for 24/7 support: https://discord.gg/kuu
+Or simply reply to this email—a real person will get back to you.
 
-- Kuu`,
+Happy gaming,
+The Kuu Team`,
 		sanitizeHeader(d.Game),
 		sanitizeHeader(d.Username),
 		d.Password,
 		sanitizeHeader(d.ServerName),
+		sanitizeHeader(nodeAddr),
 		d.Port,
 	)
 	return subject, body

@@ -27,6 +27,7 @@ var ErrNoCapacity = errors.New("no node has capacity for this plan")
 
 type NodeUtilization struct {
 	NodeID          int
+	FQDN            string
 	MemoryUsedMB    int
 	MemoryTotalMB   int
 	DiskUsedMB      int
@@ -56,9 +57,10 @@ var (
 )
 
 type nodeAttributes struct {
-	ID                 int  `json:"id"`
-	Memory             int  `json:"memory"`
-	Disk               int  `json:"disk"`
+	ID                 int    `json:"id"`
+	FQDN               string `json:"fqdn"`
+	Memory             int    `json:"memory"`
+	Disk               int    `json:"disk"`
 	AllocatedResources struct {
 		Memory int `json:"memory"`
 		Disk   int `json:"disk"`
@@ -114,6 +116,7 @@ func (c *Client) GetNodeUtilization(ctx context.Context, nodeID int, useCache bo
 
 	util := &NodeUtilization{
 		NodeID:          nodeID,
+		FQDN:            nr.Attributes.FQDN,
 		MemoryUsedMB:    nr.Attributes.AllocatedResources.Memory,
 		MemoryTotalMB:   nr.Attributes.Memory,
 		DiskUsedMB:      nr.Attributes.AllocatedResources.Disk,
