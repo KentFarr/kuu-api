@@ -3,6 +3,8 @@ package database
 import (
 	"fmt"
 	"time"
+
+	"github.com/jmoiron/sqlx"
 )
 
 type PendingEmail struct {
@@ -36,10 +38,10 @@ func (db *DB) EnqueueEmail(toAddr, subject, body string) (int, error) {
 // in the past, locking them with FOR UPDATE SKIP LOCKED so multiple workers
 // can poll concurrently without colliding. The caller must commit or roll back
 // the returned transaction.
-func (db *DB) ClaimDueEmails(limit int) ([]PendingEmail, func() error, func() error, error) {
+func (db *DB) ClaimDueEmails(limit int) ([]PendingEmail, *sqlx.Tx, error) {
 	tx, err := db.conn.Beginx()
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to begin tx: %w", err)
+		return nil, nil, fmt.Errorf("failed to begin tx: %w", err)
 	}
 
 	var emails []PendingEmail
@@ -55,16 +57,24 @@ func (db *DB) ClaimDueEmails(limit int) ([]PendingEmail, func() error, func() er
 	)
 	if err != nil {
 		_ = tx.Rollback()
-		return nil, nil, nil, fmt.Errorf("failed to claim due emails: %w", err)
+		return nil, nil, fmt.Errorf("failed to claim due emails: %w", err)
 	}
 
-	commit := func() error { return tx.Commit() }
-	rollback := func() error { return tx.Rollback() }
-	return emails, commit, rollback, nil
+	return emails, tx, nil
 }
 
 func (db *DB) MarkEmailSent(id int) error {
 	_, err := db.conn.Exec(
+		`UPDATE pending_emails
+		 SET sent_at = NOW(), last_error = NULL
+		 WHERE id = $1`,
+		id,
+	)
+	return err
+}
+
+func (db *DB) MarkEmailSentTx(tx *sqlx.Tx, id int) error {
+	_, err := tx.Exec(
 		`UPDATE pending_emails
 		 SET sent_at = NOW(), last_error = NULL
 		 WHERE id = $1`,
@@ -113,6 +123,18 @@ func (db *DB) ResetEmailForRetry(id int) error {
 
 func (db *DB) MarkEmailFailed(id int, errMsg string, nextAttemptAt time.Time) error {
 	_, err := db.conn.Exec(
+		`UPDATE pending_emails
+		 SET attempts = attempts + 1,
+		     last_error = $2,
+		     next_attempt_at = $3
+		 WHERE id = $1`,
+		id, errMsg, nextAttemptAt,
+	)
+	return err
+}
+
+func (db *DB) MarkEmailFailedTx(tx *sqlx.Tx, id int, errMsg string, nextAttemptAt time.Time) error {
+	_, err := tx.Exec(
 		`UPDATE pending_emails
 		 SET attempts = attempts + 1,
 		     last_error = $2,

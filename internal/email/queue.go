@@ -6,6 +6,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/jmoiron/sqlx"
 	"github.com/KentFarr/kuu-api/internal/database"
 	"github.com/KentFarr/kuu-api/internal/metrics"
 )
@@ -75,14 +76,13 @@ func (q *Queue) processOnce(ctx context.Context) {
 		return
 	}
 
-	emails, commit, rollback, err := q.DB.ClaimDueEmails(q.BatchSize)
+	emails, tx, err := q.DB.ClaimDueEmails(q.BatchSize)
 	if err != nil {
 		log.Printf("email queue: failed to claim due emails: %v", err)
 		return
 	}
-
 	if len(emails) == 0 {
-		_ = commit()
+		_ = tx.Commit()
 		return
 	}
 
@@ -90,22 +90,22 @@ func (q *Queue) processOnce(ctx context.Context) {
 
 	for _, e := range emails {
 		if ctx.Err() != nil {
-			_ = rollback()
+			_ = tx.Rollback()
 			return
 		}
-		q.attemptSend(e)
+		q.attemptSend(tx, e)
 	}
 
-	if err := commit(); err != nil {
+	if err := tx.Commit(); err != nil {
 		log.Printf("email queue: failed to commit batch: %v", err)
 	}
 }
 
-func (q *Queue) attemptSend(e database.PendingEmail) {
+func (q *Queue) attemptSend(tx *sqlx.Tx, e database.PendingEmail) {
 	err := q.Mailer.Send(e.ToAddr, e.Subject, e.Body)
 	if err == nil {
 		metrics.EmailSends.WithLabelValues(metrics.OutcomeSent).Inc()
-		if markErr := q.DB.MarkEmailSent(e.ID); markErr != nil {
+		if markErr := q.DB.MarkEmailSentTx(tx, e.ID); markErr != nil {
 			log.Printf("email queue: sent email id=%d but failed to mark sent: %v", e.ID, markErr)
 		}
 		return
@@ -113,13 +113,14 @@ func (q *Queue) attemptSend(e database.PendingEmail) {
 
 	metrics.EmailSends.WithLabelValues(metrics.OutcomeFailed).Inc()
 	nextAttempt := time.Now().Add(backoffFor(e.Attempts + 1))
-	if markErr := q.DB.MarkEmailFailed(e.ID, err.Error(), nextAttempt); markErr != nil {
+	if markErr := q.DB.MarkEmailFailedTx(tx, e.ID, err.Error(), nextAttempt); markErr != nil {
 		log.Printf("email queue: failed to record failure for email id=%d: %v", e.ID, markErr)
 	} else {
 		log.Printf("email queue: send failed id=%d attempts=%d next=%s err=%v",
 			e.ID, e.Attempts+1, nextAttempt.Format(time.RFC3339), err)
 	}
 }
+
 
 // backoffFor returns the delay before the Nth retry attempt. 1 → 1m,
 // 2 → 4m, 3 → 9m, 4 → 16m, 5 → 25m, capped at maxBackoff so a stuck row
