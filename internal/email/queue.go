@@ -80,10 +80,13 @@ func (q *Queue) processOnce(ctx context.Context) {
 		log.Printf("email queue: failed to claim due emails: %v", err)
 		return
 	}
+
 	if len(emails) == 0 {
 		_ = commit()
 		return
 	}
+
+	log.Printf("email queue: processing batch of %d emails", len(emails))
 
 	for _, e := range emails {
 		if ctx.Err() != nil {

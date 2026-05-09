@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"log"
 	"log/slog"
 	"os"
 )
@@ -23,7 +24,12 @@ func Init() {
 	handler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	})
-	slog.SetDefault(slog.New(handler))
+	logger := slog.New(handler)
+	slog.SetDefault(logger)
+
+	// Rewire the standard log package to use our slog handler.
+	log.SetOutput(slog.NewLogLogger(handler, slog.LevelInfo).Writer())
+	log.SetFlags(0) // slog handles timestamps
 }
 
 // NewRequestID returns a 16-byte hex token. We use crypto/rand rather than
