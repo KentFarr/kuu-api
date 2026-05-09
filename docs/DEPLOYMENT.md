@@ -25,11 +25,16 @@ If you prefer a non-Docker deploy with systemd, jump to
   your real subdomain.
 - **A Pterodactyl panel** already running somewhere reachable, with:
   - An [Application API key](https://pterodactyl.io/community/config/api_keys.html)
-    that has `users` and `servers` read+write.
-  - At least one configured **Node**, **Allocation pool**, **Nest**, and
-    **Egg** for each game you sell. Note the `node_id` and the egg/nest
-    IDs — kuu-api maps plans → eggs in `internal/plans/plans.go`, so any
-    new game/egg requires a code change.
+    that has `users` and `servers` read+write, plus `nodes` read so the
+    multi-node load picker can fetch utilization.
+  - One or more configured **Nodes**, each with an **Allocation pool**.
+    kuu-api picks the least-loaded node from the configured pool per
+    request — list every node ID you want it to use in `NODE_IDS`.
+  - The **Nests** and **Eggs** for each variant you sell. The current
+    catalog (Minecraft Paper egg 4 nest 1, Minecraft Forge egg 2 nest 1,
+    Rust egg 14 nest 4) lives in
+    [`internal/plans/plans.go`](../internal/plans/plans.go). Any new
+    game/variant requires a code change there before it can be sold.
 - **A Stripe account**:
   - Test mode keys initially (`sk_test_…`).
   - One Price for each plan size (2 GB → 32 GB). Copy the `price_…` IDs.
@@ -124,7 +129,7 @@ You should see Docker Engine ≥ 27 and Compose ≥ 2.30.
 
 In your DNS provider, create an `A` record:
 
-```
+```text
 api.kuu.gg.   A   <your VPS public IPv4>
 ```
 
@@ -174,7 +179,11 @@ STRIPE_PRICE_32GB=price_...
 
 PTERODACTYL_URL=https://panel.your-domain.com
 PTERODACTYL_API_KEY=ptlc_...
-NODE_ID=1                              # numeric panel node ID
+# Comma-separated pool of panel node IDs. The provisioner picks the
+# least-loaded node from this list per request. For a single-node deploy
+# just put one ID here. NODE_ID (singular) is honored as a legacy fallback
+# but new deploys should use NODE_IDS.
+NODE_IDS=1
 
 # Compose injects DATABASE_URL pointing at the postgres service — the
 # value here is only used by `docker compose run --rm migrate up` if you
@@ -226,9 +235,13 @@ rotated by editing the file and restarting.
 ## 7. Run the database migrations
 
 Compose's `migrate` service has `profiles: ["tools"]` so it doesn't run on
-`up -d`. Trigger it explicitly:
+`up -d`. The migrate binary uses `embed.FS` for the SQL files, so a
+**rebuild is required any time `migrations/*.sql` changes** — Compose's
+build cache will otherwise reuse a stale image and goose will report
+"migrations up to date" against an outdated set:
 
 ```sh
+docker compose build migrate
 docker compose run --rm migrate up
 ```
 
@@ -241,8 +254,9 @@ Verify:
 docker compose run --rm migrate status
 ```
 
-All three migrations (`001_initial`, `002_idempotency_and_indexes`,
-`003_pending_emails`) should report as applied.
+All four migrations (`001_initial`, `002_idempotency_and_indexes`,
+`003_pending_emails`, `004_server_variant_and_version`) should report as
+applied.
 
 ---
 
@@ -284,10 +298,12 @@ failed (DB / Pterodactyl / SMTP).
 In the Stripe dashboard → Developers → Webhooks → **Add endpoint**:
 
 - URL: `https://api.kuu.gg/api/webhook`
-- Events: at minimum `checkout.session.completed`,
-  `customer.subscription.deleted`, `customer.subscription.updated`,
-  `invoice.payment_failed` (mirror what the handler watches for in
-  [internal/handlers/webhook.go](../internal/handlers/webhook.go)).
+- Events: at minimum `checkout.session.completed` (provisions),
+  `customer.subscription.deleted` (suspends — server is reaped 14 days
+  later, see [§13 Subscription lifecycle](#13-subscription-lifecycle)),
+  and `invoice.payment_failed` (also suspends). Mirror exactly what
+  [internal/handlers/webhook.go](../internal/handlers/webhook.go)
+  switches on.
 - Save, then copy the **Signing secret** (`whsec_…`).
 
 Update `.env` on the VPS:
@@ -333,30 +349,39 @@ wrong, see [docs/OPERATIONS.md](OPERATIONS.md#metrics-cheatsheet).
 
 ---
 
-## 11. Set up backups
+## 11. Set up off-host backups
 
-The Postgres data lives in the named volume `kuu-api_postgres-data`. At
-minimum, schedule a nightly logical dump:
+Postgres data lives in the `postgres-data` named volume on the VPS. The
+volume is durable across container restarts but not across VPS loss, so
+configure the bundled backup service to ship dumps to S3-compatible
+object storage.
 
-```sh
-sudo install -d -o deploy -g deploy /var/backups/kuu-api
-crontab -e
-```
+1. Sign up for a provider and create a bucket. Recommended:
+   - **Backblaze B2** — cheapest, 10 GB free
+     (`https://s3.us-west-002.backblazeb2.com` or your bucket region)
+   - **Cloudflare R2** — free egress, 10 GB free
+     (`https://<accountid>.r2.cloudflarestorage.com`)
+2. Create an application key scoped to that bucket. Note the access key
+   and secret.
+3. Fill in the `BACKUP_S3_*` block in `.env` (see `.env.example` for the
+   full list — at minimum `BACKUP_S3_ENDPOINT`, `BACKUP_S3_BUCKET`,
+   `BACKUP_S3_ACCESS_KEY`, `BACKUP_S3_SECRET_KEY`).
+4. Bring the service up — it lives behind the `backup` profile so it
+   doesn't start unless explicitly enabled:
 
-Add:
+   ```sh
+   docker compose --profile backup up -d backup
+   ```
 
-```
-15 3 * * *  cd /srv/kuu-api && docker compose exec -T postgres pg_dump -U kuu -d kuu | gzip > /var/backups/kuu-api/kuu-$(date +\%F).sql.gz
-0  4 * * *  find /var/backups/kuu-api -mtime +14 -delete
-```
+The service runs `pg_dump`, gzips, uploads with a timestamped key, and
+prunes objects older than `BACKUP_RETENTION_DAYS` on each cycle. Tail
+`docker compose logs -f backup` to confirm the first upload — with
+`BACKUP_RUN_ON_START=true` (the default) you should see one within
+seconds.
 
-Then **do a restore drill**: copy a dump to a scratch host, `gunzip | psql`
-it into a fresh Postgres, and run `kuu-migrate status` against it to prove
-the schema and goose version are intact. An untested backup is not a
-backup.
-
-For better durability, ship the dumps off-host (S3, B2, OVH Object
-Storage) — losing the VPS loses the local backups too.
+**Drill the restore before you need it.** Restore procedure is in
+[OPERATIONS.md → Backups → Restore from backup](OPERATIONS.md#restore-from-backup).
+An untested backup is not a backup.
 
 ---
 
@@ -370,11 +395,54 @@ docker compose run --rm migrate up      # if migrations changed
 docker compose up -d kuu-api            # rolls the API container
 ```
 
-The order matters: migrations first, API second. The unit file in
-[deploy/systemd/](../deploy/systemd/) makes this dependency explicit; with
-Compose, the operator does. If a release ships breaking schema changes
-that the previous binary can't tolerate, schedule a brief outage —
-`docker compose stop kuu-api` → migrate → `up -d`.
+The order matters: migrations first, API second. Two gotchas:
+
+- **Always rebuild `migrate` when `migrations/` changes.** The migrations
+  are embedded in the binary via `go:embed`, so the running image must
+  be rebuilt before `migrate up` will see new files. Compose's layer
+  cache will silently reuse a stale image and report "migrations up to
+  date" otherwise. The `docker compose build kuu-api migrate` line
+  above covers this.
+- **If the new release adds the backup service or changes its env**, run
+  `docker compose --profile backup build backup` and
+  `docker compose --profile backup up -d backup` separately — the
+  default `up -d` doesn't touch services in non-default profiles.
+
+The unit file in [deploy/systemd/](../deploy/systemd/) makes the
+migrate-then-api ordering explicit; with Compose, the operator does. If
+a release ships breaking schema changes that the previous binary can't
+tolerate, schedule a brief outage — `docker compose stop kuu-api` →
+migrate → `up -d`.
+
+---
+
+## 13. Subscription lifecycle
+
+Once paid traffic is flowing, a subscription moves through the following
+states. The deploy is wired so the operator does not need to intervene
+in the steady-state lifecycle, but the table below names which
+component drives each transition so you know where to look when
+something is off:
+
+| Stripe event | DB effect | Server effect | Driven by |
+| ------------ | --------- | ------------- | --------- |
+| `checkout.session.completed` | inserts `customers`, `subscriptions`, `servers` rows | creates Pterodactyl user + server | provisioner |
+| `customer.subscription.deleted` | `subscriptions.status='suspended'`, `cancelled_at=NOW()` | suspends Pterodactyl server | webhook → provisioner |
+| `invoice.payment_failed` | same suspension path as above | suspends Pterodactyl server | webhook → provisioner |
+| (none — internal timer) | deletes `servers` row when `cancelled_at < NOW() - 14d` | deletes Pterodactyl server | reaper (`internal/provisioner/reaper.go`) |
+
+**Suspended servers are kept for 14 days** before the daily reaper hard-
+deletes them. Subscription, customer, and Pterodactyl-user rows are
+preserved across the reap so billing history stays intact and a
+returning customer keeps their login. To change the grace period, edit
+`defaultReapGracePeriod` in `internal/provisioner/reaper.go` — there is
+no env knob today; flip it to a constant change so the policy is
+reviewable in code review.
+
+If a customer wants to come back inside the 14-day window, the supported
+path is to manually unsuspend in the panel and re-activate the
+subscription in Stripe. There is no admin endpoint for this yet — file
+it under "talk to ops" until volume justifies one.
 
 ---
 

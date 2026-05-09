@@ -60,8 +60,8 @@ is already reached the worker still passes — fix the root cause first
 
 ## Run reconciliation
 
-Compares `servers` rows against the panel's actual state on the configured
-node:
+Compares `servers` rows against the panel's actual state across every
+node listed in `NODE_IDS`:
 
 ```sh
 curl -s -H "Authorization: Bearer $ADMIN_BEARER_TOKEN" \
@@ -72,11 +72,56 @@ Returns three buckets:
 
 - **tracked** — IDs present in both. Healthy.
 - **orphaned** — DB row exists, panel doesn't. Likely a panel-side delete
-  outside kuu-api. Decide whether to remove the DB row or recreate the
-  panel server.
+  outside kuu-api, or the daily reaper deleting the panel side then
+  failing to delete the DB row (rare). Decide whether to remove the DB
+  row or recreate the panel server.
 - **dangling** — Panel has a server kuu-api doesn't know about. Either a
   manual creation on the panel or a provisioner crash between
   `CreateServer` and the DB insert. Investigate before deleting.
+
+If you've added a node to `NODE_IDS` recently, expect every server still
+on the old single node to show up as tracked — reconciliation iterates
+the configured pool, so a node missing from `NODE_IDS` is invisible to
+this report. Keep the env in sync with the panel.
+
+## Subscription lifecycle and the reaper
+
+Cancellation, payment failure, and hard-deletion all run through the
+same wiring. Walking the timeline for a single customer:
+
+1. Stripe sends `customer.subscription.deleted` (cancellation) or
+   `invoice.payment_failed`. The webhook handler calls
+   `Provisioner.SuspendServer`, which suspends the Pterodactyl server,
+   sets `subscriptions.status='suspended'` and `cancelled_at=NOW()`,
+   and sets `servers.status='suspended'`. The customer can no longer
+   start their server but their world files are intact on the panel
+   node.
+2. The daily `Reaper` (in `internal/provisioner/reaper.go`) wakes up
+   24h later. For every server whose subscription was cancelled more
+   than 14 days ago, it calls Pterodactyl `DeleteServer` and then
+   removes the `servers` row.
+3. `subscriptions`, `customers`, and the Pterodactyl user account are
+   never touched by the reaper — billing history is preserved, and a
+   returning customer keeps their login on the panel.
+
+What this means for ops:
+
+- **Restoring a recently-cancelled customer (within 14d):** unsuspend
+  in the panel UI and re-activate the subscription in Stripe; the
+  webhook fires and the system catches up. There is no admin endpoint
+  for this yet.
+- **After 14d:** the panel server is gone. A new checkout for the same
+  email reuses the existing Pterodactyl user (they keep their login)
+  and creates a fresh server with a new world.
+- **Changing the grace period:** edit `defaultReapGracePeriod` in
+  `internal/provisioner/reaper.go` and redeploy. Deliberately a code
+  constant rather than an env knob so the policy lives in code review.
+- **Watching the reaper:** filter logs for `msg=~"reaper:"`. A run
+  that finds nothing logs nothing, so silence is the steady state.
+
+```sh
+docker compose logs --since 48h kuu-api | jq -r 'select(.msg | startswith("reaper:") // false)'
+```
 
 ## Rotate the admin bearer token
 
@@ -191,6 +236,12 @@ curl -s -H "$TOK" https://api.kuu.gg/metrics | grep '^kuu_db_'
 
 # Pending email queue depth (point-in-time, from the worker)
 curl -s -H "$TOK" https://api.kuu.gg/metrics | grep '^kuu_email_pending'
+
+# Per-node memory + free allocations (refreshed every 30s)
+curl -s -H "$TOK" https://api.kuu.gg/metrics | grep '^kuu_node_'
+
+# How traffic is distributing across the node pool
+curl -s -H "$TOK" https://api.kuu.gg/metrics | grep '^kuu_provision_node_chosen_total'
 ```
 
 The full instrument list is in
@@ -205,6 +256,23 @@ idempotent via `webhook_events.event_id` — these errors are turned into
 `{ outcome: "skipped" }` and a 200 response. If you see one returned to
 Stripe as a 500, check whether two distinct events hashed to the same
 constraint somehow.
+
+### "subscription not found" on customer.subscription.deleted
+
+Benign log noise that fires when Stripe sends
+`customer.subscription.deleted` for a subscription the DB no longer
+knows about. Two ways this happens, both expected:
+
+- A provisioning attempt failed and the rollback chain deleted the
+  subscription row before the deletion webhook arrived. The customer
+  was never charged successfully, so there is nothing to suspend.
+- A subscription that was cancelled long enough ago to have been
+  reaped is being deleted (or re-deleted) on the Stripe side.
+
+Today this surfaces as an `ERROR`-level log; treat it as informational
+unless it pairs with a customer complaint about a server that should
+have been suspended. A future polish item is to demote this specific
+case to `INFO` so it stops triggering alerting hooks.
 
 ### Customer didn't get welcome email
 
@@ -276,17 +344,21 @@ docker compose stop kuu-api
 
 The container catches SIGTERM, drains in-flight HTTP requests for up to
 30s (`http.Server.Shutdown`), then waits for the email queue worker, the
-DB stats collector, and the daily cleaner to exit before the process
-returns. Postgres and Caddy keep running.
+DB stats collector, the per-node metrics sampler, the daily cleaner,
+and the suspended-server reaper to exit before the process returns.
+Postgres and Caddy keep running.
 
 `docker compose down` stops everything in dependency order. Add `-v` only
 if you genuinely want to wipe the database volume.
 
 ## What lives where on the host
 
-```
+```text
 /srv/kuu-api/                 # the repo + .env
 /var/lib/docker/volumes/      # postgres-data, caddy-data, caddy-config volumes
-/var/backups/kuu-api/         # pg_dump archives
 /etc/kuu-api/secrets          # systemd-only: the secrets file
 ```
+
+Off-host backups (object storage) are configured via `BACKUP_S3_*` and
+are inspected with the provider's own tooling — they don't live on this
+host. See [Backups](#backups).

@@ -3,9 +3,14 @@
 Go service that turns a Stripe Checkout payment into a running game server on
 a Pterodactyl panel. The webhook handler is the entire product surface: a
 successful `checkout.session.completed` event provisions a Pterodactyl user
-(if needed), creates a server on the configured node, persists the customer
-↔ subscription ↔ server mapping in Postgres, and queues a welcome email with
-the generated SFTP credentials.
+(if needed), picks the least-loaded node from the configured pool, creates
+a server using the buyer's chosen game + variant + version, persists the
+customer ↔ subscription ↔ server mapping in Postgres, and queues a welcome
+email with the generated SFTP credentials.
+
+A separate daily reaper hard-deletes servers whose subscription has been
+suspended for more than 14 days. Subscription / customer rows and the
+Pterodactyl user account are preserved across that boundary.
 
 > **New here?** Jump to [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for a full
 > step-by-step OVH VPS walkthrough. For day-2 ops see
@@ -13,7 +18,7 @@ the generated SFTP credentials.
 
 ## How it fits together
 
-```
+```text
    Stripe Checkout
         │
         ▼  POST /api/webhook
@@ -21,7 +26,7 @@ the generated SFTP credentials.
   │   kuu-api         │ ──────► │  Pterodactyl     │
   │  (Go, port 8081)  │         │  Application API │
   └─────────┬─────────┘         └──────────────────┘
-            │
+            │                       (pool of nodes)
             │  pgx                       SMTP
             ▼                             ▲
        ┌────────┐                   ┌────────────┐
@@ -34,26 +39,54 @@ the generated SFTP credentials.
 What runs in the box:
 
 - **kuu-api** — the HTTP server (handlers, provisioner, email queue worker,
-  daily cleaner, Prometheus metrics).
+  daily idempotency cleaner, daily suspended-server reaper, Prometheus
+  metrics).
 - **kuu-migrate** — a one-shot binary that runs the embedded migrations.
   Bundled in the same Docker image; in production you run it before
   starting (or restarting) `kuu-api`.
+- **kuu-backup** — optional off-host Postgres dump+upload daemon. Built
+  from `cmd/backup` into a separate image (`Dockerfile.backup`) and gated
+  behind the `backup` docker-compose profile. See
+  [docs/OPERATIONS.md](docs/OPERATIONS.md#backups).
+
+## Games and variants
+
+Each game has one or more variants the buyer picks at checkout. A variant
+binds a Pterodactyl egg, docker image, and per-server env contract.
+Currently exposed:
+
+- **Minecraft** — `paper` (default), `forge`. Both accept a `version` (e.g.
+  `1.21.1`); the env-var name differs per variant (`MINECRAFT_VERSION` vs
+  `MC_VERSION`) and is held inside the variant config. Vanilla and
+  Bungeecord eggs exist on the panel but are intentionally not exposed.
+- **Rust** — `vanilla` (default), `oxide`, `carbon`. Selected via the
+  `FRAMEWORK` env var. There is no user-selectable version. RCON password
+  and `QUERY_PORT/RCON_PORT/APP_PORT` are derived per server at provision.
+- **FiveM** — stub. The egg has not been imported on the panel yet, so
+  the variant table reports `Configured() == false` and `/api/checkout`
+  rejects requests for it.
+
+Adding a new game or variant is a code change in
+[internal/plans/plans.go](internal/plans/plans.go) — the table is the
+source of truth for everything checkout, the webhook, and the
+provisioner know about games.
 
 ## Repository layout
 
-```
+```text
 cmd/
   server/         main.go for kuu-api
   migrate/        main.go for kuu-migrate
+  backup/         main.go for kuu-backup (pg_dump + S3 upload daemon)
 internal/
   config/         env parsing + validation
   database/       pgx wrapper, models, migrations runner glue, daily cleaner
   email/          SMTP send + persistent retry queue + templating
   handlers/       HTTP handlers, middleware, rate limit, admin surface, health
   logging/        slog JSON setup + request-ID context plumbing
-  metrics/        Prometheus instruments + DB pool stats collector
-  plans/          static price-id ↔ plan table
-  provisioner/    Stripe → Pterodactyl → DB → email orchestration
+  metrics/        Prometheus instruments + DB pool + per-node samplers
+  plans/          static price-id ↔ plan table; game + variant catalog
+  provisioner/    Stripe → Pterodactyl → DB → email orchestration; reaper
   pterodactyl/    HTTP client for the panel application API
 migrations/       embedded *.sql + embed.go (goose-compatible)
 deploy/
@@ -63,7 +96,8 @@ docs/
   DEPLOYMENT.md   OVH VPS step-by-step
   OPERATIONS.md   day-2 runbooks
 docker-compose.yml   production compose stack (postgres + api + caddy)
-Dockerfile           multi-stage; produces both binaries on distroless
+Dockerfile           multi-stage; produces kuu-api + kuu-migrate on distroless
+Dockerfile.backup    postgres:16-alpine base for kuu-backup (needs pg_dump)
 ```
 
 ## Quickstart (local dev)
@@ -110,7 +144,10 @@ The required ones are:
 
 - `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`
 - `STRIPE_PRICE_2GB`…`STRIPE_PRICE_32GB` (per-plan price IDs)
-- `PTERODACTYL_URL`, `PTERODACTYL_API_KEY`, `NODE_ID`
+- `PTERODACTYL_URL`, `PTERODACTYL_API_KEY`
+- `NODE_IDS` — comma-separated pool of node IDs the provisioner may use
+  (e.g. `1,2,3`). The legacy single-node `NODE_ID` is honored as a
+  fallback when `NODE_IDS` is unset.
 - `DATABASE_URL`
 
 Recommended for production:
