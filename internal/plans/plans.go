@@ -25,6 +25,8 @@ type Game struct {
 	Name           string                 // user-facing label, e.g. "Minecraft"
 	Variants       map[string]GameVariant // variant key → config
 	DefaultVariant string                 // variant to use when the request omits one
+	MinPort        int
+	MaxPort        int
 }
 
 // GameVariant binds a Pterodactyl egg to a specific configuration. We model
@@ -175,6 +177,8 @@ var Games = map[string]Game{
 	"minecraft": {
 		Name:           "Minecraft",
 		DefaultVariant: "paper",
+		MinPort:        25565,
+		MaxPort:        25700,
 		Variants: map[string]GameVariant{
 			"paper": {
 				Name:        "Paper",
@@ -213,6 +217,8 @@ var Games = map[string]Game{
 	"rust": {
 		Name:           "Rust",
 		DefaultVariant: "vanilla",
+		MinPort:        28015,
+		MaxPort:        28200,
 		Variants: map[string]GameVariant{
 			"vanilla": rustVariant("Vanilla", "vanilla"),
 			"oxide":   rustVariant("Oxide", "oxide"),
@@ -231,6 +237,8 @@ var Games = map[string]Game{
 	"fivem": {
 		Name:           "FiveM",
 		DefaultVariant: "vanilla",
+		MinPort:        30120,
+		MaxPort:        30200,
 		Variants: map[string]GameVariant{
 			"vanilla": {
 				Name:        "FiveM",
@@ -264,6 +272,8 @@ var Games = map[string]Game{
 	"gmod": {
 		Name:           "Garry's Mod",
 		DefaultVariant: "vanilla",
+		MinPort:        27015,
+		MaxPort:        27200,
 		Variants: map[string]GameVariant{
 			"vanilla": {
 				Name:        "Garry's Mod",

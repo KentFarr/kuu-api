@@ -222,7 +222,7 @@ func (p *Provisioner) ProvisionServer(ctx context.Context, req Request) (result 
 	}()
 
 	serverName := fmt.Sprintf("%s-%s-%d", req.Game, plan.Name, pteroUserID)
-	server, allocPort, chosenNodeID, nodeAddress, resolvedVersion, err := p.createServerWithRetry(ctx, serverName, pteroUserID, variant, req.Version, plan)
+	server, allocPort, chosenNodeID, nodeAddress, resolvedVersion, err := p.createServerWithRetry(ctx, serverName, pteroUserID, variant, req.Version, plan, req.Game)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create server: %w", err)
 	}
@@ -313,8 +313,13 @@ func (p *Provisioner) ProvisionServer(ctx context.Context, req Request) (result 
 	}, nil
 }
 
-func (p *Provisioner) createServerWithRetry(ctx context.Context, serverName string, pteroUserID int, variant plans.GameVariant, requestedVersion string, plan *plans.Plan) (*pterodactyl.ServerAttributes, int, int, string, string, error) {
+func (p *Provisioner) createServerWithRetry(ctx context.Context, serverName string, pteroUserID int, variant plans.GameVariant, requestedVersion string, plan *plans.Plan, gameKey string) (*pterodactyl.ServerAttributes, int, int, string, string, error) {
 	logger := logging.FromContext(ctx)
+
+	gameConfig, ok := plans.Games[gameKey]
+	if !ok {
+		return nil, 0, 0, "", "", fmt.Errorf("unknown game: %s", gameKey)
+	}
 
 	var (
 		lastErr         error
@@ -347,7 +352,7 @@ func (p *Provisioner) createServerWithRetry(ctx context.Context, serverName stri
 			nodeAddress = util.FQDN
 		}
 
-		alloc, err := p.PteroClient.FindFreeAllocation(ctx, nodeID)
+		alloc, err := p.PteroClient.FindFreeAllocation(ctx, nodeID, gameConfig.MinPort, gameConfig.MaxPort)
 		if err != nil {
 			lastErr = err
 			pterodactyl.InvalidateNodeCache(nodeID)
