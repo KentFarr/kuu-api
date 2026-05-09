@@ -61,7 +61,7 @@ func main() {
 		log.Println("email service not configured, skipping")
 	}
 
-	prov := provisioner.New(pteroClient, db, emailQueue, cfg.NodeID)
+	prov := provisioner.New(pteroClient, db, emailQueue, cfg.NodeIDs)
 
 	checkout := &handlers.CheckoutHandler{
 		SuccessURL: cfg.CheckoutSuccessURL,
@@ -74,15 +74,15 @@ func main() {
 		DB:            db,
 	}
 
-	health := &handlers.HealthHandler{DB: db, Ptero: pteroClient, Mail: mailer}
+	health := &handlers.HealthHandler{DB: db, Ptero: pteroClient, Mail: mailer, NodeIDs: cfg.NodeIDs}
 
 	checkoutLimiter := handlers.NewIPRateLimiter(rate.Every(2*time.Second), 5, cfg.TrustedProxyCIDRs)
 
 	admin := &handlers.AdminHandler{
-		Token:  cfg.AdminBearerToken,
-		DB:     db,
-		Ptero:  pteroClient,
-		NodeID: cfg.NodeID,
+		Token:   cfg.AdminBearerToken,
+		DB:      db,
+		Ptero:   pteroClient,
+		NodeIDs: cfg.NodeIDs,
 	}
 
 	mux := http.NewServeMux()
@@ -135,6 +135,27 @@ func main() {
 	go func() {
 		defer workers.Done()
 		dbStats.Run(ctx)
+	}()
+
+	nodeMetrics := &metrics.NodeMetricsCollector{
+		NodeIDs: cfg.NodeIDs,
+		Fetcher: func(ctx context.Context, nodeID int) (*metrics.NodeUtilSample, error) {
+			u, err := pteroClient.GetNodeUtilization(ctx, nodeID, false)
+			if err != nil {
+				return nil, err
+			}
+			return &metrics.NodeUtilSample{
+				NodeID:          u.NodeID,
+				MemoryUsedMB:    u.MemoryUsedMB,
+				MemoryTotalMB:   u.MemoryTotalMB,
+				FreeAllocations: u.FreeAllocations,
+			}, nil
+		},
+	}
+	workers.Add(1)
+	go func() {
+		defer workers.Done()
+		nodeMetrics.Run(ctx)
 	}()
 
 	go func() {

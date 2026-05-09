@@ -19,6 +19,19 @@ type UserResponse struct {
 	Attributes UserAttributes `json:"attributes"`
 }
 
+// UsernameSource records which path produced the final username so callers
+// can log it for observability — drift between user-chosen and generated
+// names is operationally interesting.
+type UsernameSource string
+
+const (
+	UsernameSourceUserChosen   UsernameSource = "user_chosen"
+	UsernameSourceGenerated    UsernameSource = "generated"
+	UsernameSourceHashFallback UsernameSource = "hash_fallback"
+)
+
+const friendlyGenerateAttempts = 5
+
 func generatePassword() (string, error) {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
@@ -27,18 +40,56 @@ func generatePassword() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-func generateUsername(email string) string {
+// hashUsername is the legacy fallback: deterministic, guaranteed unique per
+// email, but ugly. Used only when friendly generation collides repeatedly.
+func hashUsername(email string) string {
 	sum := sha256.Sum256([]byte(email))
 	return fmt.Sprintf("kuu_%s", hex.EncodeToString(sum[:])[:12])
 }
 
-func (c *Client) CreateUser(ctx context.Context, email string) (*UserAttributes, string, error) {
+// pickUsername runs the fallback chain: user-chosen → friendly → hash. It
+// returns the chosen username, the source label, and any non-fatal lookup
+// error so the caller can log it.
+func (c *Client) pickUsername(ctx context.Context, email, requested string) (string, UsernameSource, error) {
+	if requested != "" {
+		if err := ValidateUsername(requested); err == nil {
+			existing, lookupErr := c.FindUserByUsername(ctx, requested)
+			if lookupErr != nil {
+				// Treat a panel lookup failure as "not safe to use this name"
+				// — we'd rather generate a friendly fallback than collide.
+				return c.pickGeneratedUsername(ctx, email, lookupErr)
+			}
+			if existing == nil {
+				return requested, UsernameSourceUserChosen, nil
+			}
+		}
+	}
+	return c.pickGeneratedUsername(ctx, email, nil)
+}
+
+func (c *Client) pickGeneratedUsername(ctx context.Context, email string, prior error) (string, UsernameSource, error) {
+	for i := 0; i < friendlyGenerateAttempts; i++ {
+		candidate := GenerateFriendlyUsername()
+		existing, err := c.FindUserByUsername(ctx, candidate)
+		if err != nil {
+			prior = err
+			continue
+		}
+		if existing == nil {
+			return candidate, UsernameSourceGenerated, prior
+		}
+	}
+	return hashUsername(email), UsernameSourceHashFallback, prior
+}
+
+func (c *Client) CreateUser(ctx context.Context, email, requestedUsername string) (*UserAttributes, string, UsernameSource, error) {
 	password, err := generatePassword()
 	if err != nil {
-		return nil, "", err
+		return nil, "", "", err
 	}
 
-	username := generateUsername(email)
+	username, source, lookupErr := c.pickUsername(ctx, email, requestedUsername)
+	_ = lookupErr // surfaced via source==hash_fallback or generated; caller logs source
 
 	body := map[string]interface{}{
 		"email":      email,
@@ -50,15 +101,15 @@ func (c *Client) CreateUser(ctx context.Context, email string) (*UserAttributes,
 
 	respBytes, err := c.doRequest(ctx, "POST", "/api/application/users", body)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to create user: %w", err)
+		return nil, "", "", fmt.Errorf("failed to create user: %w", err)
 	}
 
 	var resp UserResponse
 	if err := json.Unmarshal(respBytes, &resp); err != nil {
-		return nil, "", fmt.Errorf("failed to parse user response: %w", err)
+		return nil, "", "", fmt.Errorf("failed to parse user response: %w", err)
 	}
 
-	return &resp.Attributes, password, nil
+	return &resp.Attributes, password, source, nil
 }
 
 func (c *Client) DeleteUser(ctx context.Context, userID int) error {

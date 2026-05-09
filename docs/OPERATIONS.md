@@ -99,17 +99,60 @@ docker compose down && docker compose up -d   # full stack
 `docker compose down` does **not** remove volumes — Postgres data
 survives. Only `docker compose down -v` wipes data.
 
-## Restore from backup
+## Backups
 
-Given a `pg_dump` gzip from `/var/backups/kuu-api/`:
+Off-host Postgres backups run as a separate `backup` service in
+docker-compose, gated behind the `backup` profile. The service shells
+out to `pg_dump`, gzips, uploads to an S3-compatible bucket, and prunes
+objects older than the retention window each cycle.
+
+### One-time setup
+
+1. Sign up for an S3-compatible provider. Recommended:
+   - **Backblaze B2** — cheapest storage, 10 GB free
+     (`https://s3.us-west-002.backblazeb2.com` or your bucket region)
+   - **Cloudflare R2** — free egress, 10 GB free
+     (`https://<accountid>.r2.cloudflarestorage.com`)
+2. Create a bucket, e.g. `kuu-backups`.
+3. Create an application key scoped to that bucket. Save the access key
+   and secret.
+4. Fill in the `BACKUP_S3_*` block in `.env`. See `.env.example` for the
+   full set; the required fields are endpoint, bucket, access key, and
+   secret key.
+5. Bring the service up:
+
+   ```sh
+   docker compose --profile backup up -d backup
+   ```
+
+Logs (`docker compose logs -f backup`) will show a successful
+bucket-existence check at startup, then a `backup uploaded key=...`
+line on each cycle. If `BACKUP_RUN_ON_START=true` (the default) you'll
+see the first dump within seconds.
+
+### Restore from backup
+
+Listing backups in your bucket:
 
 ```sh
+# Backblaze: install b2 CLI, or use rclone, or the web console.
+# Quick check via mc (minio client):
+mc alias set kuubackups $BACKUP_S3_ENDPOINT $BACKUP_S3_ACCESS_KEY $BACKUP_S3_SECRET_KEY
+mc ls kuubackups/$BACKUP_S3_BUCKET/kuu/
+```
+
+Pulling and restoring a specific dump:
+
+```sh
+# Download (replace timestamp with the object you want).
+mc cp kuubackups/$BACKUP_S3_BUCKET/kuu/kuu-2026-05-08T030000Z.sql.gz .
+
 # Spin up a fresh stack (perhaps on a scratch host) without applying any
 # data:
 docker compose up -d postgres
 
 # Pipe the dump in. The image's psql is reachable via `exec`:
-gunzip -c /var/backups/kuu-api/kuu-2026-05-08.sql.gz | \
+gunzip -c kuu-2026-05-08T030000Z.sql.gz | \
   docker compose exec -T postgres psql -U kuu -d kuu
 
 # Sanity check schema and goose version:
@@ -122,6 +165,13 @@ docker compose up -d kuu-api
 If you're restoring **over** an existing live DB, stop the API first
 (`docker compose stop kuu-api`) so concurrent writes don't fight the
 restore, drop and recreate the database, then load the dump.
+
+### Drill it before you need it
+
+Once a quarter, restore the most recent backup into a scratch Postgres
+container and run `docker compose run --rm migrate status` to confirm
+the dump is loadable. Backups that have never been tested are not
+backups.
 
 ## Metrics cheatsheet
 

@@ -88,7 +88,129 @@ func TestGameConfigured(t *testing.T) {
 	if !ok {
 		t.Fatalf("rust game missing from Games map")
 	}
-	if rust.Configured() {
-		t.Fatalf("rust is a stub (no egg/nest), Configured() must return false")
+	if !rust.Configured() {
+		t.Fatalf("rust should be Configured() now that we have egg 14, got false")
+	}
+	fivem, ok := Games["fivem"]
+	if !ok {
+		t.Fatalf("fivem game missing from Games map")
+	}
+	if fivem.Configured() {
+		t.Fatalf("fivem is a stub (no egg imported), Configured() must return false")
+	}
+}
+
+func TestResolveVariantDefaults(t *testing.T) {
+	v, ok := ResolveVariant("minecraft", "")
+	if !ok {
+		t.Fatal("expected minecraft default variant to resolve")
+	}
+	if v.Name != "Paper" {
+		t.Fatalf("expected Paper as minecraft default variant, got %q", v.Name)
+	}
+	v, ok = ResolveVariant("rust", "")
+	if !ok {
+		t.Fatal("expected rust default variant to resolve")
+	}
+	if v.Name != "Vanilla" {
+		t.Fatalf("expected Vanilla as rust default variant, got %q", v.Name)
+	}
+}
+
+func TestResolveVariantExplicit(t *testing.T) {
+	cases := []struct {
+		game, variant, want string
+	}{
+		{"minecraft", "paper", "Paper"},
+		{"minecraft", "forge", "Forge"},
+		{"rust", "vanilla", "Vanilla"},
+		{"rust", "oxide", "Oxide"},
+		{"rust", "carbon", "Carbon"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.game+"/"+tc.variant, func(t *testing.T) {
+			v, ok := ResolveVariant(tc.game, tc.variant)
+			if !ok {
+				t.Fatalf("expected variant to resolve")
+			}
+			if v.Name != tc.want {
+				t.Fatalf("got %q, want %q", v.Name, tc.want)
+			}
+		})
+	}
+}
+
+func TestResolveVariantUnknown(t *testing.T) {
+	if _, ok := ResolveVariant("doom", ""); ok {
+		t.Fatal("expected unknown game to fail to resolve")
+	}
+	if _, ok := ResolveVariant("minecraft", "vanilla"); ok {
+		t.Fatal("vanilla was intentionally excluded; it must not resolve")
+	}
+}
+
+func TestBuildEnvironmentMinecraftVersion(t *testing.T) {
+	v, _ := ResolveVariant("minecraft", "paper")
+	env, version, err := BuildEnvironment(v, "1.21.1", 25565)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if version != "1.21.1" {
+		t.Fatalf("expected 1.21.1, got %q", version)
+	}
+	if env["MINECRAFT_VERSION"] != "1.21.1" {
+		t.Fatalf("MINECRAFT_VERSION not set: %v", env)
+	}
+	if env["SERVER_JARFILE"] != "server.jar" {
+		t.Fatalf("base env not preserved: %v", env)
+	}
+}
+
+func TestBuildEnvironmentMinecraftDefaultVersion(t *testing.T) {
+	v, _ := ResolveVariant("minecraft", "paper")
+	_, version, err := BuildEnvironment(v, "", 25565)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if version != "latest" {
+		t.Fatalf("expected default 'latest', got %q", version)
+	}
+}
+
+func TestBuildEnvironmentRustGeneratesRconAndPorts(t *testing.T) {
+	v, _ := ResolveVariant("rust", "oxide")
+	env, _, err := BuildEnvironment(v, "", 28015)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if env["FRAMEWORK"] != "oxide" {
+		t.Fatalf("FRAMEWORK should be oxide, got %q", env["FRAMEWORK"])
+	}
+	if got := env["RCON_PASS"]; len(got) != 32 {
+		t.Fatalf("RCON_PASS should be 32-char hex, got %q (len=%d)", got, len(got))
+	}
+	if env["QUERY_PORT"] != "28016" || env["RCON_PORT"] != "28017" || env["APP_PORT"] != "28018" {
+		t.Fatalf("port-derived env wrong: %v", env)
+	}
+}
+
+func TestBuildEnvironmentDoesNotMutateBase(t *testing.T) {
+	// BuildEnvironment must copy the variant's Environment map, not return
+	// it directly — otherwise per-server values like RCON_PASS would leak
+	// across provisions.
+	v, _ := ResolveVariant("rust", "vanilla")
+	env1, _, err := BuildEnvironment(v, "", 28015)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	env2, _, err := BuildEnvironment(v, "", 28015)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if env1["RCON_PASS"] == env2["RCON_PASS"] {
+		t.Fatalf("RCON_PASS must be regenerated per call, got identical %q", env1["RCON_PASS"])
+	}
+	if _, baseLeak := v.Environment["RCON_PASS"]; baseLeak {
+		t.Fatalf("base Environment was mutated; RCON_PASS leaked into shared map")
 	}
 }

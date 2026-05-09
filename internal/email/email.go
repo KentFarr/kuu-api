@@ -71,7 +71,8 @@ Password: %s
 Server name: %s
 Connect: node1.kuu.gg:%d
 
-Please change your password after your first login.
+You can change your username and password anytime in your Pterodactyl panel
+under Account Settings. Please change your password after your first login.
 
 Questions? Join our Discord or reply to this email.
 

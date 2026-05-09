@@ -33,6 +33,10 @@ services:
     build: .
     profiles: ["tools"]
     entrypoint: ["/usr/local/bin/kuu-migrate"]
+    # kuu-migrate currently shares config.Load() with kuu-api, so it
+    # requires the same env vars even though it only touches the DB.
+    # Loading .env keeps that working until we narrow migrate's config.
+    env_file: .env
     environment:
       DATABASE_URL: postgres://kuu:${POSTGRES_PASSWORD}@postgres:5432/kuu?sslmode=disable
     depends_on:
@@ -77,6 +81,23 @@ services:
       KUU_API_DOMAIN: ${KUU_API_DOMAIN:?KUU_API_DOMAIN is required (e.g. api.kuu.gg)}
     depends_on:
       - kuu-api
+
+  # Off-host database backups. Gated behind the "backup" profile so the
+  # service does not start until BACKUP_S3_* env vars are populated. Bring
+  # it up explicitly with:
+  #   docker compose --profile backup up -d backup
+  backup:
+    build:
+      context: .
+      dockerfile: Dockerfile.backup
+    profiles: ["backup"]
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://kuu:${POSTGRES_PASSWORD}@postgres:5432/kuu?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
 
 volumes:
   postgres-data:

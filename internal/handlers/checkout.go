@@ -3,6 +3,8 @@ package handlers
 import (
 	"encoding/json"
 	"net/http"
+	"regexp"
+	"strings"
 
 	"github.com/stripe/stripe-go/v82"
 	"github.com/stripe/stripe-go/v82/checkout/session"
@@ -12,8 +14,16 @@ import (
 
 const maxCheckoutBodyBytes = 4 << 10
 
+// versionPattern is intentionally permissive: panel-side validation will
+// catch malformed versions when CreateServer fires. We just want to reject
+// obviously malicious or oversized inputs (newlines, excessive length)
+// before they hit Stripe metadata or the panel.
+var versionPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,32}$`)
+
 type CheckoutRequest struct {
 	Game    string `json:"game"`
+	Variant string `json:"variant,omitempty"` // optional; empty = game default
+	Version string `json:"version,omitempty"` // optional; empty = variant default
 	PriceID string `json:"price_id"`
 }
 
@@ -36,6 +46,9 @@ func (h *CheckoutHandler) HandleCheckout(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
+	req.Variant = strings.TrimSpace(req.Variant)
+	req.Version = strings.TrimSpace(req.Version)
+
 	if req.PriceID == "" || req.Game == "" {
 		http.Error(w, "game and price_id are required", http.StatusBadRequest)
 		return
@@ -47,10 +60,36 @@ func (h *CheckoutHandler) HandleCheckout(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	variant, ok := plans.ResolveVariant(req.Game, req.Variant)
+	if !ok || !variant.Configured() {
+		http.Error(w, "unsupported variant for game", http.StatusBadRequest)
+		return
+	}
+
+	if req.Version != "" {
+		if variant.VersionField == "" {
+			http.Error(w, "this variant does not accept a version", http.StatusBadRequest)
+			return
+		}
+		if !versionPattern.MatchString(req.Version) {
+			http.Error(w, "version contains invalid characters or is too long", http.StatusBadRequest)
+			return
+		}
+	}
+
 	plan := plans.FindByPriceID(req.PriceID)
 	if plan == nil {
 		http.Error(w, "unsupported price", http.StatusBadRequest)
 		return
+	}
+
+	// Resolve which variant key landed (caller may have sent ""), so the
+	// webhook reads back the same value we provisioned against. Without
+	// this round-trip, a default-variant request would lose its identity
+	// in metadata.
+	resolvedVariant := req.Variant
+	if resolvedVariant == "" {
+		resolvedVariant = gameConfig.DefaultVariant
 	}
 
 	params := &stripe.CheckoutSessionParams{
@@ -63,9 +102,26 @@ func (h *CheckoutHandler) HandleCheckout(w http.ResponseWriter, r *http.Request)
 		},
 		SuccessURL: stripe.String(h.SuccessURL),
 		CancelURL:  stripe.String(h.CancelURL),
+		CustomFields: []*stripe.CheckoutSessionCustomFieldParams{
+			{
+				Key: stripe.String("username"),
+				Label: &stripe.CheckoutSessionCustomFieldLabelParams{
+					Type:   stripe.String(string(stripe.CheckoutSessionCustomFieldLabelTypeCustom)),
+					Custom: stripe.String("Choose a username (optional)"),
+				},
+				Type: stripe.String(string(stripe.CheckoutSessionCustomFieldTypeText)),
+				Text: &stripe.CheckoutSessionCustomFieldTextParams{
+					MinimumLength: stripe.Int64(3),
+					MaximumLength: stripe.Int64(32),
+				},
+				Optional: stripe.Bool(true),
+			},
+		},
 	}
 	params.Metadata = map[string]string{
 		"game":     req.Game,
+		"variant":  resolvedVariant,
+		"version":  req.Version, // may be empty; webhook applies VersionDefault
 		"price_id": req.PriceID,
 	}
 

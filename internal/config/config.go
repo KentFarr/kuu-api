@@ -22,7 +22,7 @@ type Config struct {
 	SMTPUsername        string
 	SMTPPassword        string
 	SMTPFrom            string
-	NodeID              int
+	NodeIDs             []int
 	CheckoutSuccessURL  string
 	CheckoutCancelURL   string
 	CORSAllowedOrigin   string
@@ -37,9 +37,9 @@ func Load() (*Config, error) {
 	// present on disk. See .env.example for the operational guidance.
 	godotenv.Load()
 
-	nodeID, err := strconv.Atoi(getEnv("NODE_ID", "1"))
+	nodeIDs, err := parseNodeIDs(os.Getenv("NODE_IDS"), os.Getenv("NODE_ID"))
 	if err != nil {
-		return nil, fmt.Errorf("NODE_ID must be an integer: %w", err)
+		return nil, err
 	}
 
 	trustedProxies, err := parseCIDRs(os.Getenv("TRUSTED_PROXY_CIDRS"))
@@ -59,7 +59,7 @@ func Load() (*Config, error) {
 		SMTPUsername:        os.Getenv("SMTP_USERNAME"),
 		SMTPPassword:        os.Getenv("SMTP_PASSWORD"),
 		SMTPFrom:            getEnv("SMTP_FROM", "noreply@kuu.gg"),
-		NodeID:              nodeID,
+		NodeIDs:             nodeIDs,
 		CheckoutSuccessURL:  getEnv("CHECKOUT_SUCCESS_URL", "https://kuu.gg/success"),
 		CheckoutCancelURL:   getEnv("CHECKOUT_CANCEL_URL", "https://kuu.gg"),
 		CORSAllowedOrigin:   getEnv("CORS_ALLOWED_ORIGIN", "https://kuu.gg"),
@@ -88,6 +88,46 @@ func getEnv(key, fallback string) string {
 		return val
 	}
 	return fallback
+}
+
+// parseNodeIDs reads the multi-node pool from NODE_IDS (comma-separated),
+// falling back to a single-element slice from legacy NODE_ID. Returns an
+// error if neither is set, if any entry is non-integer, or if duplicates
+// are present (a duplicate node would skew load-based selection).
+func parseNodeIDs(rawList, legacy string) ([]int, error) {
+	rawList = strings.TrimSpace(rawList)
+	if rawList == "" {
+		legacy = strings.TrimSpace(legacy)
+		if legacy == "" {
+			legacy = "1"
+		}
+		id, err := strconv.Atoi(legacy)
+		if err != nil {
+			return nil, fmt.Errorf("NODE_ID must be an integer: %w", err)
+		}
+		return []int{id}, nil
+	}
+	seen := make(map[int]struct{})
+	var ids []int
+	for _, part := range strings.Split(rawList, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		id, err := strconv.Atoi(part)
+		if err != nil {
+			return nil, fmt.Errorf("NODE_IDS contains non-integer %q: %w", part, err)
+		}
+		if _, dup := seen[id]; dup {
+			return nil, fmt.Errorf("NODE_IDS contains duplicate node %d", id)
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("NODE_IDS is set but contains no valid entries")
+	}
+	return ids, nil
 }
 
 func parseCIDRs(raw string) ([]*net.IPNet, error) {

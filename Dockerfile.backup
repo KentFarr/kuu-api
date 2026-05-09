@@ -1,0 +1,25 @@
+# syntax=docker/dockerfile:1.7
+#
+# kuu-backup runs as a separate container so it can carry pg_dump (from the
+# postgres:16 image) without bloating the kuu-api distroless image. The Go
+# binary is built against the same module cache as kuu-api so deps stay in
+# sync.
+
+FROM golang:1.26-alpine AS builder
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+ENV CGO_ENABLED=0 GOOS=linux
+RUN go build -trimpath -ldflags="-s -w" -o /out/kuu-backup ./cmd/backup
+
+FROM postgres:16-alpine
+
+# pg_dump and gzip both ship with postgres:16-alpine; no extra apk add needed.
+COPY --from=builder /out/kuu-backup /usr/local/bin/kuu-backup
+
+USER postgres
+ENTRYPOINT ["/usr/local/bin/kuu-backup"]

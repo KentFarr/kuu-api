@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/KentFarr/kuu-api/internal/database"
@@ -29,16 +30,30 @@ type Provisioner struct {
 	PteroClient *pterodactyl.Client
 	DB          *database.DB
 	EmailQueue  *email.Queue
-	NodeID      int
+	NodeIDs     []int
 }
 
-func New(pteroClient *pterodactyl.Client, db *database.DB, emailQueue *email.Queue, nodeID int) *Provisioner {
+func New(pteroClient *pterodactyl.Client, db *database.DB, emailQueue *email.Queue, nodeIDs []int) *Provisioner {
 	return &Provisioner{
 		PteroClient: pteroClient,
 		DB:          db,
 		EmailQueue:  emailQueue,
-		NodeID:      nodeID,
+		NodeIDs:     nodeIDs,
 	}
+}
+
+// Request bundles every field ProvisionServer needs. Using a struct keeps
+// call sites readable now that we carry game + variant + version + Stripe
+// IDs + requested username — a positional arg list got unwieldy fast.
+type Request struct {
+	CustomerEmail     string
+	Game              string
+	Variant           string // empty → game's DefaultVariant
+	Version           string // empty → variant's VersionDefault
+	PriceID           string
+	StripeSubID       string
+	StripeCustomerID  string
+	RequestedUsername string
 }
 
 type ProvisionResult struct {
@@ -50,6 +65,8 @@ type ProvisionResult struct {
 	ServerName string
 	Port       int
 	Game       string
+	Variant    string
+	Version    string
 	PlanName   string
 	NewUser    bool
 }
@@ -67,7 +84,7 @@ func cleanupCtxFor(src context.Context) (context.Context, context.CancelFunc) {
 	return ctx, cancel
 }
 
-func (p *Provisioner) ProvisionServer(ctx context.Context, customerEmail, game, priceID, stripeSubID, stripeCustomerID string) (result *ProvisionResult, retErr error) {
+func (p *Provisioner) ProvisionServer(ctx context.Context, req Request) (result *ProvisionResult, retErr error) {
 	start := time.Now()
 	defer func() {
 		outcome := metrics.OutcomeOK
@@ -79,23 +96,37 @@ func (p *Provisioner) ProvisionServer(ctx context.Context, customerEmail, game, 
 
 	logger := logging.FromContext(ctx)
 
-	plan := plans.FindByPriceID(priceID)
+	plan := plans.FindByPriceID(req.PriceID)
 	if plan == nil {
-		return nil, fmt.Errorf("unknown price ID: %s", priceID)
+		return nil, fmt.Errorf("unknown price ID: %s", req.PriceID)
 	}
 
-	gameConfig, ok := plans.Games[game]
+	gameConfig, ok := plans.Games[req.Game]
 	if !ok {
-		return nil, fmt.Errorf("unknown game: %s", game)
+		return nil, fmt.Errorf("unknown game: %s", req.Game)
 	}
 	if !gameConfig.Configured() {
-		return nil, fmt.Errorf("game %s is not yet configured for provisioning", game)
+		return nil, fmt.Errorf("game %s is not yet configured for provisioning", req.Game)
 	}
 
-	logger = logger.With("game", game, "plan", plan.Name, "email", customerEmail)
+	variant, ok := plans.ResolveVariant(req.Game, req.Variant)
+	if !ok || !variant.Configured() {
+		return nil, fmt.Errorf("game %s has no configured variant %q", req.Game, req.Variant)
+	}
+	resolvedVariantKey := req.Variant
+	if resolvedVariantKey == "" {
+		resolvedVariantKey = gameConfig.DefaultVariant
+	}
+
+	logger = logger.With(
+		"game", req.Game,
+		"variant", resolvedVariantKey,
+		"plan", plan.Name,
+		"email", req.CustomerEmail,
+	)
 	logger.Info("provisioning server")
 
-	customer, err := p.DB.GetCustomerByEmail(customerEmail)
+	customer, err := p.DB.GetCustomerByEmail(req.CustomerEmail)
 	if err != nil {
 		return nil, fmt.Errorf("failed to look up customer: %w", err)
 	}
@@ -115,7 +146,7 @@ func (p *Provisioner) ProvisionServer(ctx context.Context, customerEmail, game, 
 		pteroUsername = *customer.PterodactylUsername
 		logger.Info("reusing existing pterodactyl user", "ptero_user_id", pteroUserID, "username", pteroUsername)
 	} else {
-		user, pwd, err := p.PteroClient.CreateUser(ctx, customerEmail)
+		user, pwd, source, err := p.PteroClient.CreateUser(ctx, req.CustomerEmail, req.RequestedUsername)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create pterodactyl user: %w", err)
 		}
@@ -124,7 +155,11 @@ func (p *Provisioner) ProvisionServer(ctx context.Context, customerEmail, game, 
 		password = pwd
 		newUser = true
 		createdPteroUser = true
-		logger.Info("created pterodactyl user", "ptero_user_id", pteroUserID, "username", pteroUsername)
+		logger.Info("created pterodactyl user",
+			"ptero_user_id", pteroUserID,
+			"username", pteroUsername,
+			"username_source", string(source),
+		)
 
 		defer func() {
 			if createdPteroUser {
@@ -141,7 +176,7 @@ func (p *Provisioner) ProvisionServer(ctx context.Context, customerEmail, game, 
 	}
 
 	if customer == nil {
-		newCustomer, err := p.DB.CreateCustomer(customerEmail, pteroUserID, pteroUsername)
+		newCustomer, err := p.DB.CreateCustomer(req.CustomerEmail, pteroUserID, pteroUsername)
 		if err != nil {
 			return nil, fmt.Errorf("failed to store customer: %w", err)
 		}
@@ -159,13 +194,13 @@ func (p *Provisioner) ProvisionServer(ctx context.Context, customerEmail, game, 
 		}()
 	}
 
-	if stripeCustomerID != "" {
-		if err := p.DB.UpdateStripeCustomerID(customer.ID, stripeCustomerID); err != nil {
+	if req.StripeCustomerID != "" {
+		if err := p.DB.UpdateStripeCustomerID(customer.ID, req.StripeCustomerID); err != nil {
 			logger.Warn("failed to update stripe customer id", "err", err)
 		}
 	}
 
-	sub, err := p.DB.CreateSubscription(customer.ID, stripeSubID, priceID, game)
+	sub, err := p.DB.CreateSubscription(customer.ID, req.StripeSubID, req.PriceID, req.Game)
 	if err != nil {
 		return nil, fmt.Errorf("failed to store subscription: %w", err)
 	}
@@ -181,8 +216,8 @@ func (p *Provisioner) ProvisionServer(ctx context.Context, customerEmail, game, 
 		}
 	}()
 
-	serverName := fmt.Sprintf("%s-%s-%d", game, plan.Name, pteroUserID)
-	server, allocPort, err := p.createServerWithRetry(ctx, serverName, pteroUserID, gameConfig, plan)
+	serverName := fmt.Sprintf("%s-%s-%d", req.Game, plan.Name, pteroUserID)
+	server, allocPort, chosenNodeID, resolvedVersion, err := p.createServerWithRetry(ctx, serverName, pteroUserID, variant, req.Version, plan)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create server: %w", err)
 	}
@@ -201,13 +236,24 @@ func (p *Provisioner) ProvisionServer(ctx context.Context, customerEmail, game, 
 		}
 	}()
 
-	_, err = p.DB.CreateServer(
-		sub.ID, customer.ID, server.ID, p.NodeID,
-		allocPort, serverName, game, plan.Name,
-	)
+	_, err = p.DB.CreateServer(database.CreateServerParams{
+		SubscriptionID:      sub.ID,
+		CustomerID:          customer.ID,
+		PterodactylServerID: server.ID,
+		NodeID:              chosenNodeID,
+		Port:                allocPort,
+		ServerName:          serverName,
+		Game:                req.Game,
+		Variant:             resolvedVariantKey,
+		Version:             resolvedVersion,
+		PlanName:            plan.Name,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to store server record: %w", err)
 	}
+
+	pterodactyl.InvalidateNodeCache(chosenNodeID)
+	metrics.ProvisionNodeChosen.WithLabelValues(strconv.Itoa(chosenNodeID)).Inc()
 
 	createdPteroUser = false
 	createdServerID = 0
@@ -219,10 +265,10 @@ func (p *Provisioner) ProvisionServer(ctx context.Context, customerEmail, game, 
 			Username:   pteroUsername,
 			Password:   password,
 			ServerName: serverName,
-			Game:       game,
+			Game:       req.Game,
 			Port:       allocPort,
 		})
-		if err := p.EmailQueue.Enqueue(customerEmail, subject, body); err != nil {
+		if err := p.EmailQueue.Enqueue(req.CustomerEmail, subject, body); err != nil {
 			logger.Warn("failed to enqueue welcome email", "err", err)
 		}
 	}
@@ -230,65 +276,107 @@ func (p *Provisioner) ProvisionServer(ctx context.Context, customerEmail, game, 
 	return &ProvisionResult{
 		UserID:     pteroUserID,
 		Username:   pteroUsername,
-		Email:      customerEmail,
+		Email:      req.CustomerEmail,
 		Password:   password,
 		ServerID:   server.ID,
 		ServerName: serverName,
 		Port:       allocPort,
-		Game:       game,
+		Game:       req.Game,
+		Variant:    resolvedVariantKey,
+		Version:    resolvedVersion,
 		PlanName:   plan.Name,
 		NewUser:    newUser,
 	}, nil
 }
 
-func (p *Provisioner) createServerWithRetry(ctx context.Context, serverName string, pteroUserID int, gameConfig plans.Game, plan *plans.Plan) (*pterodactyl.ServerAttributes, int, error) {
+func (p *Provisioner) createServerWithRetry(ctx context.Context, serverName string, pteroUserID int, variant plans.GameVariant, requestedVersion string, plan *plans.Plan) (*pterodactyl.ServerAttributes, int, int, string, error) {
 	logger := logging.FromContext(ctx)
 
-	var lastErr error
+	var (
+		lastErr         error
+		appliedVersion  string
+	)
 	for attempt := 1; attempt <= allocationRetryAttempts; attempt++ {
 		if attempt > 1 {
 			backoff := allocationRetryBackoff[min(attempt-2, len(allocationRetryBackoff)-1)]
 			select {
 			case <-ctx.Done():
-				return nil, 0, ctx.Err()
+				return nil, 0, 0, "", ctx.Err()
 			case <-time.After(backoff):
 			}
 		}
 
-		alloc, err := p.PteroClient.FindFreeAllocation(ctx, p.NodeID)
+		// Re-pick the node every attempt — a 422 collision often means
+		// the node we picked just filled up; staying on it would burn
+		// every retry on the same hot node.
+		nodeID, _, pickErr := p.PteroClient.PickLeastLoadedNode(ctx, p.NodeIDs, plan.RAM)
+		if pickErr != nil {
+			lastErr = pickErr
+			if errors.Is(pickErr, pterodactyl.ErrNoCapacity) {
+				break
+			}
+			continue
+		}
+
+		alloc, err := p.PteroClient.FindFreeAllocation(ctx, nodeID)
 		if err != nil {
 			lastErr = err
+			pterodactyl.InvalidateNodeCache(nodeID)
+			continue
+		}
+
+		// Build the env once we know the allocation port — Rust's
+		// ConfigureEnv hook derives QUERY_PORT/RCON_PORT/APP_PORT from
+		// the main game port. Per-server secrets (RCON_PASS) are
+		// regenerated on every retry, which is wasteful but harmless.
+		env, version, err := plans.BuildEnvironment(variant, requestedVersion, alloc.Port)
+		if err != nil {
+			lastErr = fmt.Errorf("build environment: %w", err)
 			break
 		}
-		logger.Info("allocation attempt", "attempt", attempt, "allocation_id", alloc.ID, "port", alloc.Port)
+		appliedVersion = version
+
+		logger.Info("allocation attempt",
+			"attempt", attempt,
+			"node_id", nodeID,
+			"allocation_id", alloc.ID,
+			"port", alloc.Port,
+			"version", version,
+		)
 
 		server, err := p.PteroClient.CreateServer(ctx, pterodactyl.CreateServerParams{
 			Name:         serverName,
 			UserID:       pteroUserID,
-			NestID:       gameConfig.NestID,
-			EggID:        gameConfig.EggID,
-			DockerImage:  gameConfig.DockerImage,
-			Startup:      gameConfig.Startup,
-			Environment:  gameConfig.Environment,
+			NestID:       variant.NestID,
+			EggID:        variant.EggID,
+			DockerImage:  variant.DockerImage,
+			Startup:      variant.Startup,
+			Environment:  env,
 			AllocationID: alloc.ID,
 			RAM:          plan.RAM,
 			CPU:          plan.CPU,
 			Disk:         plan.Disk,
 		})
 		if err == nil {
-			logger.Info("created server", "ptero_server_id", server.ID, "server_name", server.Name)
-			return server, alloc.Port, nil
+			logger.Info("created server",
+				"ptero_server_id", server.ID,
+				"server_name", server.Name,
+				"node_id", nodeID,
+				"version", version,
+			)
+			return server, alloc.Port, nodeID, version, nil
 		}
 
 		lastErr = err
 		var apiErr *pterodactyl.APIError
 		if errors.As(err, &apiErr) && apiErr.StatusCode == 422 {
-			logger.Warn("allocation collided, retrying", "allocation_id", alloc.ID)
+			logger.Warn("allocation collided, retrying", "node_id", nodeID, "allocation_id", alloc.ID)
+			pterodactyl.InvalidateNodeCache(nodeID)
 			continue
 		}
 		break
 	}
-	return nil, 0, lastErr
+	return nil, 0, 0, appliedVersion, lastErr
 }
 
 func (p *Provisioner) SuspendServer(ctx context.Context, stripeSubID string) error {

@@ -19,9 +19,10 @@ const readinessTimeout = 5 * time.Second
 // stop routing traffic during a Pterodactyl/SMTP outage without restarting
 // the pod, which would just churn against the same outage.
 type HealthHandler struct {
-	DB    *database.DB
-	Ptero *pterodactyl.Client
-	Mail  *email.Mailer
+	DB      *database.DB
+	Ptero   *pterodactyl.Client
+	Mail    *email.Mailer
+	NodeIDs []int
 }
 
 // Live always returns 200 unless the process itself is wedged. The HTTP
@@ -36,6 +37,10 @@ func (h *HealthHandler) Live(w http.ResponseWriter, r *http.Request) {
 // Ready pings every dependency the request path touches and returns 503 if
 // any check fails. The orchestrator should wire this into its readiness
 // probe so checkout traffic is shed when a downstream is degraded.
+//
+// With multiple Pterodactyl nodes, we report per-node utilization but only
+// fail readiness when *every* node is unreachable. One node down → degraded
+// (still 200) so traffic keeps flowing onto the survivors.
 func (h *HealthHandler) Ready(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), readinessTimeout)
 	defer cancel()
@@ -46,6 +51,33 @@ func (h *HealthHandler) Ready(w http.ResponseWriter, r *http.Request) {
 		"smtp":        checkSMTP(ctx, h.Mail),
 	}
 
+	type nodeStatus struct {
+		NodeID          int    `json:"node_id"`
+		Status          string `json:"status"`
+		MemoryUsedMB    int    `json:"memory_used_mb,omitempty"`
+		MemoryTotalMB   int    `json:"memory_total_mb,omitempty"`
+		FreeAllocations int    `json:"free_allocations,omitempty"`
+	}
+	var nodes []nodeStatus
+	var unreachable []int
+	if h.Ptero != nil {
+		for _, id := range h.NodeIDs {
+			u, err := h.Ptero.GetNodeUtilization(ctx, id, true)
+			if err != nil {
+				nodes = append(nodes, nodeStatus{NodeID: id, Status: "unreachable"})
+				unreachable = append(unreachable, id)
+				continue
+			}
+			nodes = append(nodes, nodeStatus{
+				NodeID:          id,
+				Status:          "ok",
+				MemoryUsedMB:    u.MemoryUsedMB,
+				MemoryTotalMB:   u.MemoryTotalMB,
+				FreeAllocations: u.FreeAllocations,
+			})
+		}
+	}
+
 	status := http.StatusOK
 	for _, v := range checks {
 		if v != "ok" && v != "skipped" {
@@ -53,11 +85,23 @@ func (h *HealthHandler) Ready(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
+	// Only fail readiness when every node is down — a partial outage stays
+	// readable so checkouts keep landing on the survivors.
+	if len(h.NodeIDs) > 0 && len(unreachable) == len(h.NodeIDs) {
+		status = http.StatusServiceUnavailable
+	}
 
-	writeJSON(w, status, map[string]any{
+	body := map[string]any{
 		"service": "kuu-api",
 		"checks":  checks,
-	})
+		"nodes":   nodes,
+	}
+	if len(unreachable) > 0 && len(unreachable) < len(h.NodeIDs) {
+		body["degraded"] = true
+		body["nodes_unreachable"] = unreachable
+	}
+
+	writeJSON(w, status, body)
 }
 
 func checkErr(err error) string {

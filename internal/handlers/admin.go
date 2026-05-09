@@ -24,10 +24,10 @@ const adminPendingEmailsLimit = 200
 //	GET  /admin/reconciliation     — diff Pterodactyl's view of this node
 //	                                 against our DB so ops can spot drift.
 type AdminHandler struct {
-	Token  string
-	DB     *database.DB
-	Ptero  *pterodactyl.Client
-	NodeID int
+	Token   string
+	DB      *database.DB
+	Ptero   *pterodactyl.Client
+	NodeIDs []int
 }
 
 func (h *AdminHandler) authorized(r *http.Request) bool {
@@ -90,7 +90,7 @@ func (h *AdminHandler) listPendingEmails(w http.ResponseWriter, r *http.Request)
 	})
 }
 
-// reconciliation classifies every server known to either side:
+// reconciliation classifies every server known to either side, per node:
 //   - tracked:   present in both Pterodactyl and our DB
 //   - orphaned:  in Pterodactyl, missing from our DB (likely a failed
 //     provision that didn't roll back, or a manual create)
@@ -98,62 +98,72 @@ func (h *AdminHandler) listPendingEmails(w http.ResponseWriter, r *http.Request)
 //
 // Ops can use this to find resources that need manual cleanup. We don't
 // take action automatically — admin reads only, action is operator-led.
+// With multiple nodes configured, the response groups entries by node so
+// drift can be attributed without cross-referencing logs.
 func (h *AdminHandler) reconciliation(w http.ResponseWriter, r *http.Request) {
 	logger := logging.FromContext(r.Context())
-
-	pteroServers, err := h.Ptero.ListServersOnNode(r.Context(), h.NodeID)
-	if err != nil {
-		logger.Error("admin reconciliation: ptero list failed", "err", err)
-		http.Error(w, "pterodactyl unavailable", http.StatusBadGateway)
-		return
-	}
-	dbIDs, err := h.DB.ListServerPteroIDs(h.NodeID)
-	if err != nil {
-		logger.Error("admin reconciliation: db list failed", "err", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-
-	dbSet := make(map[int]struct{}, len(dbIDs))
-	for _, id := range dbIDs {
-		dbSet[id] = struct{}{}
-	}
-	pteroSet := make(map[int]struct{}, len(pteroServers))
 
 	type entry struct {
 		PterodactylServerID int    `json:"pterodactyl_server_id"`
 		Name                string `json:"name,omitempty"`
 		Suspended           bool   `json:"suspended,omitempty"`
 	}
-	var (
-		tracked  []entry
-		orphaned []entry
-		dangling []entry
-	)
-	for _, s := range pteroServers {
-		pteroSet[s.ID] = struct{}{}
-		e := entry{PterodactylServerID: s.ID, Name: s.Name, Suspended: s.Suspended}
-		if _, ok := dbSet[s.ID]; ok {
-			tracked = append(tracked, e)
-		} else {
-			orphaned = append(orphaned, e)
-		}
+	type nodeReport struct {
+		NodeID   int     `json:"node_id"`
+		Tracked  []entry `json:"tracked"`
+		Orphaned []entry `json:"orphaned"`
+		Dangling []entry `json:"dangling"`
 	}
-	for _, id := range dbIDs {
-		if _, ok := pteroSet[id]; !ok {
-			dangling = append(dangling, entry{PterodactylServerID: id})
+
+	var nodes []nodeReport
+	totals := map[string]int{"tracked": 0, "orphaned": 0, "dangling": 0}
+
+	for _, nodeID := range h.NodeIDs {
+		pteroServers, err := h.Ptero.ListServersOnNode(r.Context(), nodeID)
+		if err != nil {
+			logger.Error("admin reconciliation: ptero list failed", "node_id", nodeID, "err", err)
+			http.Error(w, "pterodactyl unavailable", http.StatusBadGateway)
+			return
 		}
+		dbIDs, err := h.DB.ListServerPteroIDs(nodeID)
+		if err != nil {
+			logger.Error("admin reconciliation: db list failed", "node_id", nodeID, "err", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+
+		dbSet := make(map[int]struct{}, len(dbIDs))
+		for _, id := range dbIDs {
+			dbSet[id] = struct{}{}
+		}
+		pteroSet := make(map[int]struct{}, len(pteroServers))
+
+		var report nodeReport
+		report.NodeID = nodeID
+		for _, s := range pteroServers {
+			pteroSet[s.ID] = struct{}{}
+			e := entry{PterodactylServerID: s.ID, Name: s.Name, Suspended: s.Suspended}
+			if _, ok := dbSet[s.ID]; ok {
+				report.Tracked = append(report.Tracked, e)
+			} else {
+				report.Orphaned = append(report.Orphaned, e)
+			}
+		}
+		for _, id := range dbIDs {
+			if _, ok := pteroSet[id]; !ok {
+				report.Dangling = append(report.Dangling, entry{PterodactylServerID: id})
+			}
+		}
+
+		totals["tracked"] += len(report.Tracked)
+		totals["orphaned"] += len(report.Orphaned)
+		totals["dangling"] += len(report.Dangling)
+		nodes = append(nodes, report)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"node_id":  h.NodeID,
-		"tracked":  tracked,
-		"orphaned": orphaned,
-		"dangling": dangling,
-		"counts": map[string]int{
-			"tracked":  len(tracked),
-			"orphaned": len(orphaned),
-			"dangling": len(dangling),
-		},
+		"node_ids": h.NodeIDs,
+		"nodes":    nodes,
+		"counts":   totals,
 	})
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/stripe/stripe-go/v82"
 	"github.com/stripe/stripe-go/v82/webhook"
@@ -34,7 +35,15 @@ func (h *WebhookHandler) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sigHeader := r.Header.Get("Stripe-Signature")
-	event, err := webhook.ConstructEvent(body, sigHeader, h.WebhookSecret)
+	// IgnoreAPIVersionMismatch keeps us from hard-failing when Stripe rolls
+	// forward to a newer API version than this SDK was built against. The
+	// shapes of the events we care about (checkout.session.completed,
+	// customer.subscription.deleted, invoice.payment_failed) are stable, so
+	// we'd rather keep processing than drop events. Bumping stripe-go is
+	// still the right move on a slower cadence — this just keeps the
+	// pipeline alive in the meantime.
+	event, err := webhook.ConstructEventWithOptions(body, sigHeader, h.WebhookSecret,
+		webhook.ConstructEventOptions{IgnoreAPIVersionMismatch: true})
 	if err != nil {
 		logger.Warn("webhook signature verification failed", "err", err)
 		http.Error(w, "invalid signature", http.StatusUnauthorized)
@@ -105,6 +114,8 @@ func (h *WebhookHandler) handleCheckoutCompleted(ctx context.Context, event stri
 	}
 
 	game := session.Metadata["game"]
+	variant := session.Metadata["variant"]
+	version := session.Metadata["version"]
 	priceID := session.Metadata["price_id"]
 	subscriptionID := ""
 	stripeCustomerID := ""
@@ -116,16 +127,34 @@ func (h *WebhookHandler) handleCheckoutCompleted(ctx context.Context, event stri
 		stripeCustomerID = session.Customer.ID
 	}
 
+	requestedUsername := ""
+	for _, f := range session.CustomFields {
+		if f.Key == "username" && f.Text != nil {
+			requestedUsername = strings.TrimSpace(f.Text.Value)
+			break
+		}
+	}
+
 	logger.Info("checkout completed",
 		"email", customerEmail,
 		"game", game,
+		"variant", variant,
+		"version", version,
 		"price_id", priceID,
 		"stripe_subscription_id", subscriptionID,
+		"requested_username", requestedUsername,
 	)
 
-	result, err := h.Provisioner.ProvisionServer(
-		ctx, customerEmail, game, priceID, subscriptionID, stripeCustomerID,
-	)
+	result, err := h.Provisioner.ProvisionServer(ctx, provisioner.Request{
+		CustomerEmail:     customerEmail,
+		Game:              game,
+		Variant:           variant,
+		Version:           version,
+		PriceID:           priceID,
+		StripeSubID:       subscriptionID,
+		StripeCustomerID:  stripeCustomerID,
+		RequestedUsername: requestedUsername,
+	})
 	if err != nil {
 		return err
 	}
