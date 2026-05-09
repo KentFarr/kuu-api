@@ -18,17 +18,19 @@ type ServerResponse struct {
 }
 
 type CreateServerParams struct {
-	Name         string
-	UserID       int
-	NestID       int
-	EggID        int
-	DockerImage  string
-	Startup      string
-	Environment  map[string]string
-	AllocationID int
-	RAM          int
-	CPU          int
-	Disk         int
+	Name          string
+	UserID        int
+	NestID        int
+	EggID         int
+	DockerImage   string
+	Startup       string
+	Environment   map[string]string
+	AllocationID  int
+	RAM           int
+	CPU           int
+	Disk          int
+	DatabaseLimit int
+	BackupLimit   int
 }
 
 func (c *Client) CreateServer(ctx context.Context, params CreateServerParams) (*ServerAttributes, error) {
@@ -53,9 +55,9 @@ func (c *Client) CreateServer(ctx context.Context, params CreateServerParams) (*
 			"cpu":    params.CPU,
 		},
 		"feature_limits": map[string]int{
-			"databases":   1,
+			"databases":   params.DatabaseLimit,
 			"allocations": 1,
-			"backups":     3,
+			"backups":     params.BackupLimit,
 		},
 		"allocation": map[string]int{
 			"default": params.AllocationID,

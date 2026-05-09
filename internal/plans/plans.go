@@ -279,60 +279,75 @@ func rustVariant(displayName, framework string) GameVariant {
 			"MAX_PLAYERS":     "40",
 			"SERVER_IMG":      "",
 			"SAVEINTERVAL":    "60",
-			"ADDITIONAL_ARGS": "",
-			"SERVER_LOGO":     "",
-			"MAP_URL":         "",
-		},
-		ConfigureEnv: rustEnvOverlay,
-	}
-}
-
-func LoadPlans() []Plan {
-	return []Plan{
-		{
-			Name:    "2GB",
-			RAM:     2048,
-			CPU:     100,
-			Disk:    20480,
-			PriceID: os.Getenv("STRIPE_PRICE_2GB"),
-		},
-		{
-			Name:    "4GB",
-			RAM:     4096,
-			CPU:     150,
-			Disk:    40960,
-			PriceID: os.Getenv("STRIPE_PRICE_4GB"),
-		},
-		{
-			Name:    "8GB",
-			RAM:     8192,
-			CPU:     200,
-			Disk:    81920,
-			PriceID: os.Getenv("STRIPE_PRICE_8GB"),
-		},
-		{
-			Name:    "16GB",
-			RAM:     16384,
-			CPU:     300,
-			Disk:    163840,
-			PriceID: os.Getenv("STRIPE_PRICE_16GB"),
-		},
-		{
-			Name:    "24GB",
-			RAM:     24576,
-			CPU:     400,
-			Disk:    245760,
-			PriceID: os.Getenv("STRIPE_PRICE_24GB"),
-		},
-		{
-			Name:    "32GB",
-			RAM:     32768,
-			CPU:     500,
-			Disk:    327680,
-			PriceID: os.Getenv("STRIPE_PRICE_32GB"),
-		},
-	}
-}
+			type Plan struct {
+				Name          string
+				Price         int
+				CPU           int
+				Disk          int
+				PriceID       string
+				RAM           int
+				BackupLimit   int
+				DatabaseLimit int
+			}
+			...
+			func LoadPlans() []Plan {
+				return []Plan{
+					{
+						Name:          "2GB",
+						RAM:           2048,
+						CPU:           100,
+						Disk:          20480,
+						PriceID:       os.Getenv("STRIPE_PRICE_2GB"),
+						BackupLimit:   1,
+						DatabaseLimit: 0,
+					},
+					{
+						Name:          "4GB",
+						RAM:           4096,
+						CPU:           150,
+						Disk:          40960,
+						PriceID:       os.Getenv("STRIPE_PRICE_4GB"),
+						BackupLimit:   1,
+						DatabaseLimit: 0,
+					},
+					{
+						Name:          "8GB",
+						RAM:           8192,
+						CPU:           200,
+						Disk:          81920,
+						PriceID:       os.Getenv("STRIPE_PRICE_8GB"),
+						BackupLimit:   3,
+						DatabaseLimit: 1,
+					},
+					{
+						Name:          "16GB",
+						RAM:           16384,
+						CPU:           300,
+						Disk:          163840,
+						PriceID:       os.Getenv("STRIPE_PRICE_16GB"),
+						BackupLimit:   3,
+						DatabaseLimit: 1,
+					},
+					{
+						Name:          "24GB",
+						RAM:           24576,
+						CPU:           400,
+						Disk:          245760,
+						PriceID:       os.Getenv("STRIPE_PRICE_24GB"),
+						BackupLimit:   7,
+						DatabaseLimit: 2,
+					},
+					{
+						Name:          "32GB",
+						RAM:           32768,
+						CPU:           500,
+						Disk:          327680,
+						PriceID:       os.Getenv("STRIPE_PRICE_32GB"),
+						BackupLimit:   7,
+						DatabaseLimit: 2,
+					},
+				}
+			}
 
 func ValidateConfigured() error {
 	var missing []string
