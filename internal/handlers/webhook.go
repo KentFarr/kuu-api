@@ -116,6 +116,7 @@ func (h *WebhookHandler) handleCheckoutCompleted(ctx context.Context, event stri
 	game := session.Metadata["game"]
 	variant := session.Metadata["variant"]
 	version := session.Metadata["version"]
+	subdomain := session.Metadata["subdomain"]
 	priceID := session.Metadata["price_id"]
 	subscriptionID := ""
 	stripeCustomerID := ""
@@ -140,6 +141,7 @@ func (h *WebhookHandler) handleCheckoutCompleted(ctx context.Context, event stri
 		"game", game,
 		"variant", variant,
 		"version", version,
+		"subdomain", subdomain,
 		"price_id", priceID,
 		"stripe_subscription_id", subscriptionID,
 		"requested_username", requestedUsername,
@@ -150,6 +152,7 @@ func (h *WebhookHandler) handleCheckoutCompleted(ctx context.Context, event stri
 		Game:              game,
 		Variant:           variant,
 		Version:           version,
+		Subdomain:         subdomain,
 		PriceID:           priceID,
 		StripeSubID:       subscriptionID,
 		StripeCustomerID:  stripeCustomerID,

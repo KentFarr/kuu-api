@@ -50,6 +50,7 @@ type Request struct {
 	Game              string
 	Variant           string // empty → game's DefaultVariant
 	Version           string // empty → variant's VersionDefault
+	Subdomain         string
 	PriceID           string
 	StripeSubID       string
 	StripeCustomerID  string
@@ -67,6 +68,7 @@ type ProvisionResult struct {
 	Game       string
 	Variant    string
 	Version    string
+	Subdomain  string
 	PlanName   string
 	NewUser    bool
 }
@@ -246,6 +248,7 @@ func (p *Provisioner) ProvisionServer(ctx context.Context, req Request) (result 
 		Game:                req.Game,
 		Variant:             resolvedVariantKey,
 		Version:             resolvedVersion,
+		Subdomain:           req.Subdomain,
 		PlanName:            plan.Name,
 	})
 	if err != nil {
@@ -261,13 +264,17 @@ func (p *Provisioner) ProvisionServer(ctx context.Context, req Request) (result 
 	createdSubscriptionID = 0
 
 	if p.EmailQueue != nil && newUser {
+		address := nodeAddress
+		if req.Subdomain != "" {
+			address = fmt.Sprintf("%s.kuu.gg", req.Subdomain)
+		}
 		subject, body := email.RenderWelcome(email.WelcomeData{
 			Username:    pteroUsername,
 			Password:    password,
 			ServerName:  serverName,
 			Game:        req.Game,
 			Port:        allocPort,
-			NodeAddress: nodeAddress,
+			NodeAddress: address,
 		})
 		if err := p.EmailQueue.Enqueue(req.CustomerEmail, subject, body); err != nil {
 			logger.Warn("failed to enqueue welcome email", "err", err)
@@ -285,6 +292,7 @@ func (p *Provisioner) ProvisionServer(ctx context.Context, req Request) (result 
 		Game:       req.Game,
 		Variant:    resolvedVariantKey,
 		Version:    resolvedVersion,
+		Subdomain:  req.Subdomain,
 		PlanName:   plan.Name,
 		NewUser:    newUser,
 	}, nil

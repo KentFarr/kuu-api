@@ -18,6 +18,7 @@ type Server struct {
 	Game                string         `db:"game"`
 	Variant             sql.NullString `db:"variant"`
 	Version             sql.NullString `db:"version"`
+	Subdomain           sql.NullString `db:"subdomain"`
 	PlanName            string         `db:"plan_name"`
 	Status              string         `db:"status"`
 	CreatedAt           time.Time      `db:"created_at"`
@@ -36,17 +37,18 @@ type CreateServerParams struct {
 	Game                string
 	Variant             string
 	Version             string
+	Subdomain           string
 	PlanName            string
 }
 
 func (db *DB) CreateServer(p CreateServerParams) (*Server, error) {
 	var server Server
 	err := db.conn.QueryRowx(
-		`INSERT INTO servers (subscription_id, customer_id, pterodactyl_server_id, server_name, node_id, port, game, variant, version, plan_name, status)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'active')
+		`INSERT INTO servers (subscription_id, customer_id, pterodactyl_server_id, server_name, node_id, port, game, variant, version, subdomain, plan_name, status)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'active')
 		 RETURNING *`,
 		p.SubscriptionID, p.CustomerID, p.PterodactylServerID, p.ServerName,
-		p.NodeID, p.Port, p.Game, nullableStr(p.Variant), nullableStr(p.Version), p.PlanName,
+		p.NodeID, p.Port, p.Game, nullableStr(p.Variant), nullableStr(p.Version), nullableStr(p.Subdomain), p.PlanName,
 	).StructScan(&server)
 
 	if err != nil {

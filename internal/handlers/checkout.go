@@ -21,11 +21,15 @@ const maxCheckoutBodyBytes = 4 << 10
 // before they hit Stripe metadata or the panel.
 var versionPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,32}$`)
 
+// subdomainPattern ensures the chosen subdomain is DNS-safe.
+var subdomainPattern = regexp.MustCompile(`^[a-z0-9-]{1,63}$`)
+
 type CheckoutRequest struct {
-	Game    string `json:"game"`
-	Variant string `json:"variant,omitempty"` // optional; empty = game default
-	Version string `json:"version,omitempty"` // optional; empty = variant default
-	PriceID string `json:"price_id"`
+	Game      string `json:"game"`
+	Variant   string `json:"variant,omitempty"` // optional; empty = game default
+	Version   string `json:"version,omitempty"` // optional; empty = variant default
+	Subdomain string `json:"subdomain,omitempty"`
+	PriceID   string `json:"price_id"`
 }
 
 type CheckoutResponse struct {
@@ -50,6 +54,7 @@ func (h *CheckoutHandler) HandleCheckout(w http.ResponseWriter, r *http.Request)
 	}
 	req.Variant = strings.TrimSpace(req.Variant)
 	req.Version = strings.TrimSpace(req.Version)
+	req.Subdomain = strings.TrimSpace(strings.ToLower(req.Subdomain))
 
 	if req.PriceID == "" || req.Game == "" {
 		http.Error(w, "game and price_id are required", http.StatusBadRequest)
@@ -83,6 +88,18 @@ func (h *CheckoutHandler) HandleCheckout(w http.ResponseWriter, r *http.Request)
 	if plan == nil {
 		http.Error(w, "unsupported price", http.StatusBadRequest)
 		return
+	}
+
+	// Subdomain validation: Pro (8GB) and above only.
+	if req.Subdomain != "" {
+		if plan.RAM < 8192 {
+			http.Error(w, "subdomains are only available on Pro plans and above", http.StatusBadRequest)
+			return
+		}
+		if !subdomainPattern.MatchString(req.Subdomain) {
+			http.Error(w, "subdomain must be alphanumeric and may contain hyphens", http.StatusBadRequest)
+			return
+		}
 	}
 
 	// Enforce minimum RAM requirements (matching frontend)
@@ -142,10 +159,11 @@ func (h *CheckoutHandler) HandleCheckout(w http.ResponseWriter, r *http.Request)
 	}
 
 	params.Metadata = map[string]string{
-		"game":     req.Game,
-		"variant":  resolvedVariant,
-		"version":  req.Version, // may be empty; webhook applies VersionDefault
-		"price_id": req.PriceID,
+		"game":      req.Game,
+		"variant":   resolvedVariant,
+		"version":   req.Version, // may be empty; webhook applies VersionDefault
+		"subdomain": req.Subdomain,
+		"price_id":  req.PriceID,
 	}
 
 	s, err := session.New(params)
