@@ -72,7 +72,9 @@ services:
     expose:
       - "8081"
     healthcheck:
-      test: ["CMD", "/usr/local/bin/kuu-api", "-h"]
+      # Distroless has no curl/wget, so kuu-api self-probes /livez when
+      # invoked with -healthcheck. Returns 0 on 200 OK, 1 on anything else.
+      test: ["CMD", "/usr/local/bin/kuu-api", "-healthcheck"]
       interval: 30s
       timeout: 5s
       retries: 3

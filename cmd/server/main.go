@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"os/signal"
 	"sync"
 	"syscall"
@@ -27,7 +28,33 @@ import (
 	"github.com/KentFarr/kuu-api/internal/pterodactyl"
 )
 
+// runHealthcheck performs an HTTP GET against the local /livez endpoint
+// and exits the process with code 0 on a 200 OK or 1 otherwise. Used as
+// the docker-compose healthcheck command on the distroless image where
+// curl/wget aren't available — having the binary self-probe is the only
+// option without changing the base image.
+func runHealthcheck() {
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8081"
+	}
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%s/livez", port))
+	if err != nil {
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		os.Exit(1)
+	}
+}
+
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "-healthcheck" {
+		runHealthcheck()
+		return
+	}
+
 	logging.Init()
 
 	cfg, err := config.Load()
