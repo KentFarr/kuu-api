@@ -110,6 +110,7 @@ func main() {
 		Token:   cfg.AdminBearerToken,
 		DB:      db,
 		Ptero:   pteroClient,
+		Mailer:  mailer,
 		NodeIDs: cfg.NodeIDs,
 	}
 

@@ -28,6 +28,7 @@ type AdminHandler struct {
 	Token   string
 	DB      *database.DB
 	Ptero   *pterodactyl.Client
+	Mailer  *email.Mailer
 	NodeIDs []int
 }
 
@@ -69,6 +70,8 @@ func (h *AdminHandler) testEmail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	immediate := r.URL.Query().Get("immediate") == "true"
+
 	// Create dummy data
 	subject, body := email.RenderWelcome(email.WelcomeData{
 		Username:    "KuuTester",
@@ -78,6 +81,19 @@ func (h *AdminHandler) testEmail(w http.ResponseWriter, r *http.Request) {
 		Port:        25565,
 		NodeAddress: "node1.kuu.gg",
 	})
+
+	if immediate {
+		if h.Mailer == nil {
+			http.Error(w, "email service not configured", http.StatusServiceUnavailable)
+			return
+		}
+		if err := h.Mailer.Send(to, subject, body); err != nil {
+			http.Error(w, "failed to send email immediately: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"sent": true, "recipient": to, "method": "immediate"})
+		return
+	}
 
 	// Use a temporary mailer from the DB to send immediately
 	// (assuming the worker is also running)
