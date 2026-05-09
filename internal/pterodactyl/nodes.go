@@ -131,6 +131,14 @@ func (c *Client) GetNodeUtilization(ctx context.Context, nodeID int, useCache bo
 	return util, nil
 }
 
+func (c *Client) GetNodeFQDN(ctx context.Context, nodeID int) (string, error) {
+	util, err := c.GetNodeUtilization(ctx, nodeID, true)
+	if err != nil {
+		return "", err
+	}
+	return util.FQDN, nil
+}
+
 // PickLeastLoadedNode queries each candidate node in parallel and returns
 // the one with the most free memory that still has at least one free
 // allocation and enough headroom for requiredMB. Returns ErrNoCapacity if

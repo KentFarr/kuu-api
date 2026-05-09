@@ -32,7 +32,7 @@ const (
 
 const friendlyGenerateAttempts = 5
 
-func generatePassword() (string, error) {
+func GeneratePassword() (string, error) {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
 		return "", fmt.Errorf("failed to generate password: %w", err)
@@ -83,7 +83,7 @@ func (c *Client) pickGeneratedUsername(ctx context.Context, email string, prior 
 }
 
 func (c *Client) CreateUser(ctx context.Context, email, requestedUsername string) (*UserAttributes, string, UsernameSource, error) {
-	password, err := generatePassword()
+	password, err := GeneratePassword()
 	if err != nil {
 		return nil, "", "", err
 	}
@@ -118,5 +118,35 @@ func (c *Client) DeleteUser(ctx context.Context, userID int) error {
 	if err != nil {
 		return fmt.Errorf("failed to delete user %d: %w", userID, err)
 	}
+	return nil
+}
+
+func (c *Client) UpdateUserPassword(ctx context.Context, userID int, newPassword string) error {
+	// Pterodactyl requires email, username, first_name, and last_name even for a password update
+	// We'll fetch the user first to get their current details
+	path := fmt.Sprintf("/api/application/users/%d", userID)
+	respBytes, err := c.doRequest(ctx, "GET", path, nil)
+	if err != nil {
+		return fmt.Errorf("failed to fetch user %d: %w", userID, err)
+	}
+
+	var resp UserResponse
+	if err := json.Unmarshal(respBytes, &resp); err != nil {
+		return fmt.Errorf("failed to parse user %d: %w", userID, err)
+	}
+
+	body := map[string]interface{}{
+		"email":      resp.Attributes.Email,
+		"username":   resp.Attributes.Username,
+		"first_name": "Kuu",
+		"last_name":  "Player",
+		"password":   newPassword,
+	}
+
+	_, err = c.doRequest(ctx, "PATCH", path, body)
+	if err != nil {
+		return fmt.Errorf("failed to update user %d password: %w", userID, err)
+	}
+
 	return nil
 }

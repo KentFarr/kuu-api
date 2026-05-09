@@ -2,6 +2,7 @@ package database
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -119,4 +120,19 @@ func (db *DB) ListReapableServers(cutoff time.Time) ([]Server, error) {
 func (db *DB) DeleteServerByID(id int) error {
 	_, err := db.conn.Exec("DELETE FROM servers WHERE id = $1", id)
 	return err
+}
+
+func (db *DB) GetLatestActiveServerByCustomerID(customerID int) (*Server, error) {
+	var server Server
+	err := db.conn.Get(&server,
+		"SELECT * FROM servers WHERE customer_id = $1 AND status = 'active' ORDER BY created_at DESC LIMIT 1",
+		customerID,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to look up server: %w", err)
+	}
+	return &server, nil
 }

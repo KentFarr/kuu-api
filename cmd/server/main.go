@@ -114,11 +114,18 @@ func main() {
 		NodeIDs: cfg.NodeIDs,
 	}
 
+	support := &handlers.SupportHandler{
+		DB:          db,
+		PteroClient: pteroClient,
+		EmailQueue:  emailQueue,
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /livez", health.Live)
 	mux.HandleFunc("GET /readyz", health.Ready)
 	mux.HandleFunc("GET /health", health.Live)
 	mux.Handle("POST /api/checkout", checkoutLimiter.Middleware(http.HandlerFunc(checkout.HandleCheckout)))
+	mux.Handle("POST /api/support/resend-welcome", checkoutLimiter.Middleware(http.HandlerFunc(support.HandleResendWelcome)))
 	mux.HandleFunc("POST /api/webhook", wh.HandleWebhook)
 	mux.Handle("GET /metrics", metricsHandler(cfg.AdminBearerToken))
 	admin.Routes(mux)
