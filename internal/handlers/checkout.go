@@ -103,17 +103,7 @@ func (h *CheckoutHandler) HandleCheckout(w http.ResponseWriter, r *http.Request)
 		},
 		SuccessURL: stripe.String(h.SuccessURL),
 		CancelURL:  stripe.String(h.CancelURL),
-	}
-
-	if h.StripeCouponID != "" {
-		params.Discounts = []*stripe.CheckoutSessionDiscountParams{
-			{
-				Coupon: stripe.String(h.StripeCouponID),
-			},
-		}
-	}
-
-	params.CustomFields = []*stripe.CheckoutSessionCustomFieldParams{
+		CustomFields: []*stripe.CheckoutSessionCustomFieldParams{
 			{
 				Key: stripe.String("username"),
 				Label: &stripe.CheckoutSessionCustomFieldLabelParams{
@@ -129,6 +119,15 @@ func (h *CheckoutHandler) HandleCheckout(w http.ResponseWriter, r *http.Request)
 			},
 		},
 	}
+
+	if h.StripeCouponID != "" {
+		params.Discounts = []*stripe.CheckoutSessionDiscountParams{
+			{
+				Coupon: stripe.String(h.StripeCouponID),
+			},
+		}
+	}
+
 	params.Metadata = map[string]string{
 		"game":     req.Game,
 		"variant":  resolvedVariant,
