@@ -10,6 +10,7 @@ import (
 	"github.com/stripe/stripe-go/v82"
 	"github.com/stripe/stripe-go/v82/checkout/session"
 
+	"github.com/KentFarr/kuu-api/internal/logging"
 	"github.com/KentFarr/kuu-api/internal/plans"
 )
 
@@ -91,6 +92,7 @@ func (h *CheckoutHandler) HandleCheckout(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Subdomain validation: Pro (8GB) and above only.
+	subdomainMetadata := ""
 	if req.Subdomain != "" {
 		if plan.RAM < 8192 {
 			http.Error(w, "subdomains are only available on Pro plans and above", http.StatusBadRequest)
@@ -100,6 +102,7 @@ func (h *CheckoutHandler) HandleCheckout(w http.ResponseWriter, r *http.Request)
 			http.Error(w, "subdomain must be alphanumeric and may contain hyphens", http.StatusBadRequest)
 			return
 		}
+		subdomainMetadata = req.Subdomain
 	}
 
 	// Enforce minimum RAM requirements (matching frontend)
@@ -150,7 +153,7 @@ func (h *CheckoutHandler) HandleCheckout(w http.ResponseWriter, r *http.Request)
 		},
 	}
 
-	if h.StripeCouponID != "" {
+	if h.StripeCouponID != "" && h.StripeCouponID != "promo_" {
 		params.Discounts = []*stripe.CheckoutSessionDiscountParams{
 			{
 				Coupon: stripe.String(h.StripeCouponID),
@@ -162,13 +165,14 @@ func (h *CheckoutHandler) HandleCheckout(w http.ResponseWriter, r *http.Request)
 		"game":      req.Game,
 		"variant":   resolvedVariant,
 		"version":   req.Version, // may be empty; webhook applies VersionDefault
-		"subdomain": req.Subdomain,
+		"subdomain": subdomainMetadata,
 		"price_id":  req.PriceID,
 	}
 
 	s, err := session.New(params)
 	if err != nil {
-		fmt.Printf("STRIPE ERROR: failed to create checkout session: %v\n", err)
+		logger := logging.FromContext(r.Context())
+		logger.Error("failed to create checkout session", "err", err, "price_id", req.PriceID, "coupon_id", h.StripeCouponID)
 		http.Error(w, "failed to create checkout session", http.StatusInternalServerError)
 		return
 	}
