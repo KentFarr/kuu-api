@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
@@ -81,6 +82,18 @@ func (h *CheckoutHandler) HandleCheckout(w http.ResponseWriter, r *http.Request)
 	plan := plans.FindByPriceID(req.PriceID)
 	if plan == nil {
 		http.Error(w, "unsupported price", http.StatusBadRequest)
+		return
+	}
+
+	// Enforce minimum RAM requirements (matching frontend)
+	// Rust and FiveM require at least 8GB (8192MB)
+	if (req.Game == "rust" || req.Game == "fivem") && plan.RAM < 8192 {
+		http.Error(w, fmt.Sprintf("%s servers require at least 8GB of RAM", gameConfig.Name), http.StatusBadRequest)
+		return
+	}
+	// GMod requires at least 4GB (4096MB)
+	if req.Game == "gmod" && plan.RAM < 4096 {
+		http.Error(w, "Garry's Mod servers require at least 4GB of RAM", http.StatusBadRequest)
 		return
 	}
 
