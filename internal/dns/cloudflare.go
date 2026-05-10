@@ -29,6 +29,7 @@ func NewCloudflareClient(token, zoneID, domain string) *CloudflareClient {
 }
 
 type DNSRecord struct {
+	ID      string `json:"id,omitempty"`
 	Type    string `json:"type"`
 	Name    string `json:"name"`
 	Content string `json:"content"`
@@ -37,8 +38,9 @@ type DNSRecord struct {
 }
 
 type cloudflareResponse struct {
-	Success bool     `json:"success"`
-	Errors  []errorMsg `json:"errors"`
+	Success bool        `json:"success"`
+	Errors  []errorMsg  `json:"errors"`
+	Result  []DNSRecord `json:"result"`
 }
 
 type errorMsg struct {
@@ -92,6 +94,78 @@ func (c *CloudflareClient) CreateCNAME(ctx context.Context, subdomain, target st
 			return fmt.Errorf("cloudflare dns: api error (status %d): %s", resp.StatusCode, cfResp.Errors[0].Message)
 		}
 		return fmt.Errorf("cloudflare dns: api error (status %d): %s", resp.StatusCode, string(respBody))
+	}
+
+	return nil
+}
+
+func (c *CloudflareClient) DeleteCNAME(ctx context.Context, subdomain string) error {
+	if c.APIToken == "" || c.ZoneID == "" {
+		return fmt.Errorf("cloudflare dns: missing configuration (api token or zone id)")
+	}
+
+	fullName := fmt.Sprintf("%s.%s", subdomain, c.Domain)
+
+	// 1. Find the record ID
+	url := fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/dns_records?name=%s&type=CNAME", c.ZoneID, fullName)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return fmt.Errorf("cloudflare dns: failed to create lookup request: %w", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+c.APIToken)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return fmt.Errorf("cloudflare dns: lookup request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	var cfResp cloudflareResponse
+	if err := json.Unmarshal(respBody, &cfResp); err != nil {
+		return fmt.Errorf("cloudflare dns: failed to parse lookup response: %w", err)
+	}
+
+	if !cfResp.Success {
+		msg := "unknown error"
+		if len(cfResp.Errors) > 0 {
+			msg = cfResp.Errors[0].Message
+		}
+		return fmt.Errorf("cloudflare dns: lookup api error: %s", msg)
+	}
+
+	if len(cfResp.Result) == 0 {
+		// Record already gone? Success (idempotency).
+		return nil
+	}
+
+	recordID := cfResp.Result[0].ID
+
+	// 2. Delete the record
+	url = fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/dns_records/%s", c.ZoneID, recordID)
+	req, err = http.NewRequestWithContext(ctx, "DELETE", url, nil)
+	if err != nil {
+		return fmt.Errorf("cloudflare dns: failed to create delete request: %w", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+c.APIToken)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err = c.HTTP.Do(req)
+	if err != nil {
+		return fmt.Errorf("cloudflare dns: delete request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		var delResp cloudflareResponse
+		if err := json.Unmarshal(respBody, &delResp); err == nil && len(delResp.Errors) > 0 {
+			return fmt.Errorf("cloudflare dns: delete api error (status %d): %s", resp.StatusCode, delResp.Errors[0].Message)
+		}
+		return fmt.Errorf("cloudflare dns: delete api error (status %d): %s", resp.StatusCode, string(respBody))
 	}
 
 	return nil

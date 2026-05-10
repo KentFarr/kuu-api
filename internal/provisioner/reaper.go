@@ -79,15 +79,20 @@ func (r *Reaper) runOnce(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		r.reapOne(ctx, s.ID, s.PterodactylServerID, s.ServerName)
+		subdomain := ""
+		if s.Subdomain.Valid {
+			subdomain = s.Subdomain.String
+		}
+		r.reapOne(ctx, s.ID, s.PterodactylServerID, s.ServerName, subdomain)
 	}
 }
 
-func (r *Reaper) reapOne(ctx context.Context, serverID, pteroServerID int, name string) {
+func (r *Reaper) reapOne(ctx context.Context, serverID, pteroServerID int, name, subdomain string) {
 	logger := logging.FromContext(ctx).With(
 		"server_id", serverID,
 		"pterodactyl_server_id", pteroServerID,
 		"server_name", name,
+		"subdomain", subdomain,
 	)
 
 	pteroCtx, cancel := context.WithTimeout(ctx, reapPerServerTimeout)
@@ -96,6 +101,14 @@ func (r *Reaper) reapOne(ctx context.Context, serverID, pteroServerID int, name 
 	if err := r.Provisioner.PteroClient.DeleteServer(pteroCtx, pteroServerID); err != nil {
 		logger.Error("reaper: pterodactyl delete failed, leaving DB row in place", "error", err)
 		return
+	}
+
+	if subdomain != "" && r.Provisioner.DNSClient != nil {
+		if err := r.Provisioner.DNSClient.DeleteCNAME(pteroCtx, subdomain); err != nil {
+			logger.Error("reaper: dns delete failed, continuing", "error", err)
+		} else {
+			logger.Info("reaper: dns record deleted")
+		}
 	}
 
 	if err := r.Provisioner.DB.DeleteServerByID(serverID); err != nil {
