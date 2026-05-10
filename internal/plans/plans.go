@@ -40,6 +40,10 @@ type GameVariant struct {
 	DockerImage string
 	Startup     string
 
+	// ImageResolver allows a variant to dynamically pick a Docker image based
+	// on the requested version (e.g. picking Java 8 for Minecraft 1.12.2).
+	ImageResolver func(version string) string
+
 	// TuningHook allows variants to customize the Pterodactyl Startup string
 	// dynamically based on the plan (e.g. injecting Aikar's Flags for large
 	// RAM allocations).
@@ -70,7 +74,17 @@ type GameVariant struct {
 // Configured reports whether this variant has the minimum fields filled in
 // to actually create a server. Stub variants with EggID=0 fail this check.
 func (v GameVariant) Configured() bool {
-	return v.EggID != 0 && v.NestID != 0 && v.DockerImage != "" && v.Startup != ""
+	return v.EggID != 0 && v.NestID != 0 && (v.DockerImage != "" || v.ImageResolver != nil) && v.Startup != ""
+}
+
+// ResolveDockerImage returns the Docker image to use for this variant and
+// version. It prefers the ImageResolver if present, falling back to the
+// static DockerImage field.
+func (v GameVariant) ResolveDockerImage(version string) string {
+	if v.ImageResolver != nil {
+		return v.ImageResolver(version)
+	}
+	return v.DockerImage
 }
 
 // Configured reports whether the game has at least one fully-configured
@@ -141,6 +155,39 @@ func minecraftTuning(v GameVariant, ramMB int) string {
 	return "java -Xms128M -Xmx{{SERVER_MEMORY}}M " + aikarsFlags + " -jar {{SERVER_JARFILE}}"
 }
 
+// minecraftJavaResolver maps Minecraft versions to the required Java yolk.
+// The Pterodactyl yolks follow a naming convention: java_<version>.
+func minecraftJavaResolver(version string) string {
+	if version == "" || version == "latest" {
+		return "ghcr.io/pterodactyl/yolks:java_21"
+	}
+
+	// Minecraft Java Version Requirements:
+	// 1.20.5+  -> Java 21
+	// 1.18+    -> Java 17
+	// 1.17     -> Java 16
+	// 1.12+    -> Java 11 (technically 8 works, but 11 is recommended for performance)
+	// < 1.12   -> Java 8
+
+	major, minor := 0, 0
+	fmt.Sscanf(version, "1.%d.%d", &major, &minor)
+	// Note: Sscanf might fail for "1.21" (no patch), but major will be 21.
+
+	if major >= 21 || (major == 20 && minor >= 5) {
+		return "ghcr.io/pterodactyl/yolks:java_21"
+	}
+	if major >= 18 {
+		return "ghcr.io/pterodactyl/yolks:java_17"
+	}
+	if major == 17 {
+		return "ghcr.io/pterodactyl/yolks:java_16"
+	}
+	if major >= 12 {
+		return "ghcr.io/pterodactyl/yolks:java_11"
+	}
+	return "ghcr.io/pterodactyl/yolks:java_8"
+}
+
 // rconPassword returns a 16-byte hex string suitable for RCON_PASS. We use
 // crypto/rand because RCON gives the holder full server control — anything
 // less than CSPRNG would be a foot-gun.
@@ -181,12 +228,12 @@ var Games = map[string]Game{
 		MaxPort:        25700,
 		Variants: map[string]GameVariant{
 			"paper": {
-				Name:        "Paper",
-				EggID:       4,
-				NestID:      1,
-				DockerImage: "ghcr.io/pterodactyl/yolks:java_21",
-				Startup:     "java -Xms128M -Xmx{{SERVER_MEMORY}}M -Dterminal.jline=false -Dterminal.ansi=true -jar {{SERVER_JARFILE}}",
-				TuningHook:  minecraftTuning,
+				Name:          "Paper",
+				EggID:         4,
+				NestID:        1,
+				ImageResolver: minecraftJavaResolver,
+				Startup:       "java -Xms128M -Xmx{{SERVER_MEMORY}}M -Dterminal.jline=false -Dterminal.ansi=true -jar {{SERVER_JARFILE}}",
+				TuningHook:    minecraftTuning,
 				Environment: map[string]string{
 					"SERVER_JARFILE": "server.jar",
 					"BUILD_NUMBER":   "latest",
@@ -195,11 +242,11 @@ var Games = map[string]Game{
 				VersionDefault: "latest",
 			},
 			"forge": {
-				Name:        "Forge",
-				EggID:       2,
-				NestID:      1,
-				DockerImage: "ghcr.io/pterodactyl/yolks:java_21",
-				Startup:     "java -Xms128M -Xmx{{SERVER_MEMORY}}M -jar {{SERVER_JARFILE}}",
+				Name:          "Forge",
+				EggID:         2,
+				NestID:        1,
+				ImageResolver: minecraftJavaResolver,
+				Startup:       "java -Xms128M -Xmx{{SERVER_MEMORY}}M -jar {{SERVER_JARFILE}}",
 				TuningHook:  minecraftTuning,
 				Environment: map[string]string{
 					"SERVER_JARFILE": "server.jar",

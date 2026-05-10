@@ -388,7 +388,7 @@ func (p *Provisioner) createServerWithRetry(ctx context.Context, serverName stri
 			UserID:        pteroUserID,
 			NestID:        variant.NestID,
 			EggID:         variant.EggID,
-			DockerImage:   variant.DockerImage,
+			DockerImage:   variant.ResolveDockerImage(appliedVersion),
 			Startup:       startup,
 			Environment:   env,
 			AllocationID:  alloc.ID,
