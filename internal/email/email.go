@@ -100,6 +100,27 @@ The Kuu Team`,
 	return subject, body
 }
 
+// RenderManageSubscription produces the (subject, body) pair for a subscription
+// management email. It includes the Stripe Billing Portal URL.
+func RenderManageSubscription(portalURL string) (subject, body string) {
+	subject = sanitizeHeader("Manage your Kuu subscription")
+	body = fmt.Sprintf(`Hi there,
+
+You requested a link to manage your Kuu subscription. You can use the link below to view your invoices, change your payment method, or cancel your subscription:
+
+%s
+
+This link is private and should not be shared with anyone else.
+
+Need help?
+Join our Discord for 24/7 support: https://discord.gg/b76772cCvs
+Or simply reply to this email.
+
+Best,
+The Kuu Team`, portalURL)
+	return subject, body
+}
+
 // Ping verifies SMTP reachability with a TCP dial. We deliberately do not
 // open an SMTP session — that would burn an authentication round-trip on
 // every readiness probe and risk tripping rate limits on the relay.

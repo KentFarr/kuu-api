@@ -127,6 +127,7 @@ func main() {
 		DB:          db,
 		PteroClient: pteroClient,
 		EmailQueue:  emailQueue,
+		ReturnURL:   cfg.CORSAllowedOrigin,
 	}
 
 	mux := http.NewServeMux()
@@ -135,6 +136,7 @@ func main() {
 	mux.HandleFunc("GET /health", health.Live)
 	mux.Handle("POST /api/checkout", checkoutLimiter.Middleware(http.HandlerFunc(checkout.HandleCheckout)))
 	mux.Handle("POST /api/support/resend-welcome", checkoutLimiter.Middleware(http.HandlerFunc(support.HandleResendWelcome)))
+	mux.Handle("POST /api/support/manage", checkoutLimiter.Middleware(http.HandlerFunc(support.HandleManageSubscription)))
 	mux.HandleFunc("POST /api/webhook", wh.HandleWebhook)
 	mux.Handle("GET /metrics", metricsHandler(cfg.AdminBearerToken))
 	admin.Routes(mux)
@@ -212,7 +214,7 @@ func main() {
 
 	go func() {
 		log.Printf("kuu-api starting on %s", addr)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(http.ErrServerClosed, err) {
 			log.Fatalf("server failed: %v", err)
 		}
 	}()
