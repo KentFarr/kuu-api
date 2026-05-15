@@ -162,8 +162,34 @@ func TestBuildEnvironmentMinecraftDefaultVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if version != "latest" {
-		t.Fatalf("expected default 'latest', got %q", version)
+	if version != v.VersionDefault {
+		t.Fatalf("expected default %q, got %q", v.VersionDefault, version)
+	}
+}
+
+func TestBuildEnvironmentMinecraftBadVersionFallsBackToDefault(t *testing.T) {
+	v, _ := ResolveVariant("minecraft", "paper")
+	for _, bad := range []string{"latest", "abcdef", "1.x.y", "99.99.99", "2.0.0"} {
+		_, version, err := BuildEnvironment(v, bad, 25565)
+		if err != nil {
+			t.Fatalf("unexpected error for %q: %v", bad, err)
+		}
+		if version != v.VersionDefault {
+			t.Fatalf("input %q: expected fallback to %q, got %q", bad, v.VersionDefault, version)
+		}
+	}
+}
+
+func TestBuildEnvironmentMinecraftValidVersionPassesThrough(t *testing.T) {
+	v, _ := ResolveVariant("minecraft", "paper")
+	for _, good := range []string{"1.8.8", "1.20", "1.21.4"} {
+		_, version, err := BuildEnvironment(v, good, 25565)
+		if err != nil {
+			t.Fatalf("unexpected error for %q: %v", good, err)
+		}
+		if version != good {
+			t.Fatalf("input %q: expected pass-through, got %q", good, version)
+		}
 	}
 }
 

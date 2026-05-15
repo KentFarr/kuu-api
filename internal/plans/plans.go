@@ -5,18 +5,27 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"regexp"
 	"strconv"
 )
 
+// minecraftVersionPattern matches Minecraft Java version strings like "1.21",
+// "1.21.4", or "1.8.8". When a checkout sends a version that fails this
+// pattern (typo, deprecated alias, a version PaperMC has since removed),
+// BuildEnvironment falls back to the variant's VersionDefault so the
+// provision never fails on a bad version string.
+var minecraftVersionPattern = regexp.MustCompile(`^1\.\d{1,2}(\.\d{1,2})?$`)
+
 type Plan struct {
-	Name          string
-	Price         int
-	CPU           int
-	Disk          int
-	PriceID       string
-	RAM           int
-	BackupLimit   int
-	DatabaseLimit int
+	Name            string
+	Price           int
+	CPU             int
+	Disk            int
+	PriceID         string
+	RAM             int
+	BackupLimit     int
+	DatabaseLimit   int
+	AllocationLimit int
 }
 
 // Game is a top-level user-facing game choice (e.g. "minecraft", "rust").
@@ -60,8 +69,15 @@ type GameVariant struct {
 	// (e.g. Rust — there's no MC-style version dropdown).
 	VersionField string
 
-	// VersionDefault is what we send when the user doesn't supply one.
+	// VersionDefault is what we send when the user doesn't supply one, OR
+	// when the supplied version fails VersionPattern. Should always be a
+	// version known to be installable by the egg.
 	VersionDefault string
+
+	// VersionPattern, if set, is checked against the requested version. A
+	// non-matching version is replaced with VersionDefault. Leave nil to
+	// skip validation (variants where version isn't user-selectable).
+	VersionPattern *regexp.Regexp
 
 	// ConfigureEnv runs at provision time after the version overlay. It
 	// receives a writable copy of the env so callers can inject per-server
@@ -125,6 +141,9 @@ func BuildEnvironment(v GameVariant, version string, allocPort int) (map[string]
 	}
 	if v.VersionField != "" {
 		if version == "" {
+			version = v.VersionDefault
+		}
+		if v.VersionPattern != nil && !v.VersionPattern.MatchString(version) {
 			version = v.VersionDefault
 		}
 		env[v.VersionField] = version
@@ -240,6 +259,7 @@ var Games = map[string]Game{
 				},
 				VersionField:   "MINECRAFT_VERSION",
 				VersionDefault: "latest",
+				VersionPattern: minecraftVersionPattern,
 			},
 			"forge": {
 				Name:          "Forge",
@@ -254,6 +274,7 @@ var Games = map[string]Game{
 				},
 				VersionField:   "MC_VERSION",
 				VersionDefault: "latest",
+				VersionPattern: minecraftVersionPattern,
 			},
 		},
 	},
@@ -374,58 +395,64 @@ func rustVariant(displayName, framework string) GameVariant {
 func LoadPlans() []Plan {
 	return []Plan{
 		{
-			Name:          "2GB",
-			RAM:           2048,
-			CPU:           100,
-			Disk:          20480,
-			PriceID:       os.Getenv("STRIPE_PRICE_2GB"),
-			BackupLimit:   1,
-			DatabaseLimit: 0,
+			Name:            "2GB",
+			RAM:             2048,
+			CPU:             100,
+			Disk:            20480,
+			PriceID:         os.Getenv("STRIPE_PRICE_2GB"),
+			BackupLimit:     1,
+			DatabaseLimit:   0,
+			AllocationLimit: 2,
 		},
 		{
-			Name:          "4GB",
-			RAM:           4096,
-			CPU:           150,
-			Disk:          40960,
-			PriceID:       os.Getenv("STRIPE_PRICE_4GB"),
-			BackupLimit:   1,
-			DatabaseLimit: 0,
+			Name:            "4GB",
+			RAM:             4096,
+			CPU:             150,
+			Disk:            40960,
+			PriceID:         os.Getenv("STRIPE_PRICE_4GB"),
+			BackupLimit:     1,
+			DatabaseLimit:   0,
+			AllocationLimit: 2,
 		},
 		{
-			Name:          "8GB",
-			RAM:           8192,
-			CPU:           200,
-			Disk:          81920,
-			PriceID:       os.Getenv("STRIPE_PRICE_8GB"),
-			BackupLimit:   3,
-			DatabaseLimit: 1,
+			Name:            "8GB",
+			RAM:             8192,
+			CPU:             200,
+			Disk:            81920,
+			PriceID:         os.Getenv("STRIPE_PRICE_8GB"),
+			BackupLimit:     3,
+			DatabaseLimit:   1,
+			AllocationLimit: 3,
 		},
 		{
-			Name:          "16GB",
-			RAM:           16384,
-			CPU:           300,
-			Disk:          163840,
-			PriceID:       os.Getenv("STRIPE_PRICE_16GB"),
-			BackupLimit:   3,
-			DatabaseLimit: 1,
+			Name:            "16GB",
+			RAM:             16384,
+			CPU:             300,
+			Disk:            163840,
+			PriceID:         os.Getenv("STRIPE_PRICE_16GB"),
+			BackupLimit:     3,
+			DatabaseLimit:   1,
+			AllocationLimit: 3,
 		},
 		{
-			Name:          "24GB",
-			RAM:           24576,
-			CPU:           400,
-			Disk:          245760,
-			PriceID:       os.Getenv("STRIPE_PRICE_24GB"),
-			BackupLimit:   7,
-			DatabaseLimit: 2,
+			Name:            "24GB",
+			RAM:             24576,
+			CPU:             400,
+			Disk:            245760,
+			PriceID:         os.Getenv("STRIPE_PRICE_24GB"),
+			BackupLimit:     7,
+			DatabaseLimit:   2,
+			AllocationLimit: 5,
 		},
 		{
-			Name:          "32GB",
-			RAM:           32768,
-			CPU:           500,
-			Disk:          327680,
-			PriceID:       os.Getenv("STRIPE_PRICE_32GB"),
-			BackupLimit:   7,
-			DatabaseLimit: 2,
+			Name:            "32GB",
+			RAM:             32768,
+			CPU:             500,
+			Disk:            327680,
+			PriceID:         os.Getenv("STRIPE_PRICE_32GB"),
+			BackupLimit:     7,
+			DatabaseLimit:   2,
+			AllocationLimit: 5,
 		},
 	}
 }

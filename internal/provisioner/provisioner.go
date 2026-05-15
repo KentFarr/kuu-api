@@ -384,19 +384,20 @@ func (p *Provisioner) createServerWithRetry(ctx context.Context, serverName stri
 		)
 
 		server, err := p.PteroClient.CreateServer(ctx, pterodactyl.CreateServerParams{
-			Name:          serverName,
-			UserID:        pteroUserID,
-			NestID:        variant.NestID,
-			EggID:         variant.EggID,
-			DockerImage:   variant.ResolveDockerImage(appliedVersion),
-			Startup:       startup,
-			Environment:   env,
-			AllocationID:  alloc.ID,
-			RAM:           plan.RAM,
-			CPU:           plan.CPU,
-			Disk:          plan.Disk,
-			DatabaseLimit: plan.DatabaseLimit,
-			BackupLimit:   plan.BackupLimit,
+			Name:            serverName,
+			UserID:          pteroUserID,
+			NestID:          variant.NestID,
+			EggID:           variant.EggID,
+			DockerImage:     variant.ResolveDockerImage(appliedVersion),
+			Startup:         startup,
+			Environment:     env,
+			AllocationID:    alloc.ID,
+			RAM:             plan.RAM,
+			CPU:             plan.CPU,
+			Disk:            plan.Disk,
+			DatabaseLimit:   plan.DatabaseLimit,
+			BackupLimit:     plan.BackupLimit,
+			AllocationLimit: plan.AllocationLimit,
 		})
 		if err == nil {
 			logger.Info("created server",
