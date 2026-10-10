@@ -81,11 +81,11 @@ func newFakePtero() *fakePtero {
 	}
 }
 
-func (f *fakePtero) CreateUser(_ context.Context, email, requestedUsername string) (*pterodactyl.UserAttributes, string, pterodactyl.UsernameSource, error) {
+func (f *fakePtero) CreateUser(_ context.Context, email, requestedUsername string) (*pterodactyl.UserAttributes, pterodactyl.UsernameSource, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.fail.check("CreateUser"); err != nil {
-		return nil, "", "", err
+		return nil, "", err
 	}
 	f.nextID++
 	username := requestedUsername
@@ -94,7 +94,7 @@ func (f *fakePtero) CreateUser(_ context.Context, email, requestedUsername strin
 	}
 	u := pterodactyl.UserAttributes{ID: f.nextID, Username: username, Email: email}
 	f.users[u.ID] = u
-	return &u, "test-password", pterodactyl.UsernameSource("test"), nil
+	return &u, pterodactyl.UsernameSource("test"), nil
 }
 
 func (f *fakePtero) DeleteUser(_ context.Context, userID int) error {

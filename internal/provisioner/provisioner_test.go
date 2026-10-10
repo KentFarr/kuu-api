@@ -74,6 +74,11 @@ func TestProvisionServerHappyPath(t *testing.T) {
 	if e := queue.sent[0]; e.To != "alice@example.com" || !strings.Contains(e.Body, "alice.kuu.gg") {
 		t.Errorf("welcome email = %+v, want to alice@example.com mentioning alice.kuu.gg", e)
 	}
+	// The panel sends the set-password link; our stored email must hold
+	// no credentials.
+	if body := queue.sent[0].Body; !strings.Contains(body, "Setup Your Account") || strings.Contains(body, "Password:") {
+		t.Errorf("new-account email should point to the panel's setup email and contain no password:\n%s", body)
+	}
 
 	if !res.NewUser || res.PlanName != "2GB" || res.Variant != "paper" {
 		t.Errorf("result = %+v, want new user, plan 2GB, variant paper", res)
@@ -188,10 +193,10 @@ func TestProvisionServerReusesExistingCustomer(t *testing.T) {
 			t.Errorf("server row customer = %d, want %d", s.CustomerID, c.ID)
 		}
 	}
-	// The welcome email carries a password, and a returning customer's
-	// password wasn't changed, so none is sent.
-	if len(queue.sent) != 0 {
-		t.Errorf("sent %d welcome emails to a returning customer", len(queue.sent))
+	// Returning customers get a server-ready email too, telling them to
+	// use their existing login rather than waiting for a setup email.
+	if len(queue.sent) != 1 || !strings.Contains(queue.sent[0].Body, "existing Kuu panel account") {
+		t.Errorf("emails = %+v, want one server-ready email for the existing account", queue.sent)
 	}
 }
 

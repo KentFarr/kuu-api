@@ -293,11 +293,14 @@ case to `INFO` so it stops triggering alerting hooks.
 
    Then call retry. (A first-class admin endpoint for this is on the
    roadmap — see Tier 2 in the production plan.)
-5. **The customer's panel password is generated once and only stored in
-   the email body**. If the email is permanently lost, we need to reset
-   the Pterodactyl user's password and send a fresh welcome — there is
-   no admin endpoint for this yet. Drop into the panel UI and reset
-   manually, then send the customer their new credentials by hand.
+5. **The welcome email holds no password**, so a lost email is only an
+   inconvenience: the customer (or the frontend, via
+   `POST /api/support/resend-welcome`) can get the server details
+   re-sent. To log in, they set or reset their password themselves at
+   `panel.kuu.gg/auth/password`. If they never received the panel's
+   "Account Created" setup email, that page sends a fresh link. This
+   needs the panel's own mail settings to work; check the panel's
+   mail logs if reset emails aren't arriving.
 
 ### Provisioner rolled back
 

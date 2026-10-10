@@ -28,7 +28,9 @@ The frontend's only jobs in the purchase flow are:
 3. Redirect the browser to the returned Stripe Checkout URL.
 4. Render the `/success` and `/cancel` landing pages Stripe redirects
    back to.
-5. Tell the user to expect a welcome email with their server credentials.
+5. Tell the user to expect two emails: a "server ready" email from Kuu
+   with their server details, and (first purchase only) an "Account
+   Created" email from the panel with a link to set their password.
 
 The frontend does **not**:
 
@@ -284,9 +286,13 @@ Flow narrative:
    on the least-loaded node, persists the customer ↔ subscription ↔
    server mapping, and queues a welcome email.
 6. **The customer receives the welcome email** with their panel URL
-   (`panel.kuu.gg`), username, and SFTP credentials. This email is
-   the user-facing "your server is ready" signal — typically arrives
-   within a minute of payment confirmation.
+   (`panel.kuu.gg`), username, and server address. It contains no
+   password. On a first purchase, the panel separately emails an
+   "Account Created" message with a **Setup Your Account** link to
+   choose a password (valid 60 minutes; after that, the panel's
+   "Forgot password" page at `panel.kuu.gg/auth/password` issues a new
+   one). The welcome email is the user-facing "your server is ready"
+   signal — typically arrives within a minute of payment confirmation.
 
 ### What the `/success` page should say
 
@@ -295,7 +301,9 @@ page must not promise an instant server. Suggested copy:
 
 > Payment received. Your server is being provisioned now — you'll get
 > a welcome email at *the address you used at checkout* within a few
-> minutes containing your panel URL, username, and SFTP credentials.
+> minutes with your panel URL, username and server address. New
+> customers also get an email from our panel with a link to set their
+> password.
 > If it's been more than 10 minutes and you haven't seen it, check
 > your spam folder, then contact support.
 
@@ -325,8 +333,8 @@ FiveM servers ship with a placeholder `FIVEM_LICENSE` that **must** be
 replaced before the server will start. The customer obtains a license
 key from the [cfx.re portal](https://portal.cfx.re/) (free). They then:
 
-1. Open `panel.kuu.gg` and log in with the credentials from the
-   welcome email.
+1. Open `panel.kuu.gg` and log in with the username from the welcome
+   email and the password they set through the panel's setup link.
 2. Open their server → **Startup** tab.
 3. Replace the `Server License` value with their cfx.re key.
 4. Save and start the server.
@@ -439,7 +447,8 @@ Don't try to build features that depend on these — they don't exist:
   Stripe's customer portal (which you'd configure on the Stripe side
   and link from the success/account pages).
 - **No password reset or username change flow on the API.**
-  Customers manage credentials in the Pterodactyl panel.
+  kuu-api never sets or sees customer passwords. Customers set and
+  reset them through the Pterodactyl panel (`panel.kuu.gg/auth/password`).
 - **No `Retry-After` on rate-limit responses.** Just back off.
 
 ---
@@ -541,7 +550,7 @@ frontend should:
 ## 14. Reporting bugs / asking questions
 
 The integration story isn't perfect — common things you'll likely hit
-that aren't covered above (pricing display, account portal links,
-forgotten-password flow) need product decisions and a backend change.
+that aren't covered above (pricing display, account portal
+links) need product decisions and a backend change.
 Open an issue or ping ops with the use case rather than working around
 the API surface.

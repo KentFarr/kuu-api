@@ -44,7 +44,6 @@ func TestSanitizeHeaderStripsCRLF(t *testing.T) {
 func TestRenderWelcomeIncludesAllFields(t *testing.T) {
 	subject, body := RenderWelcome(WelcomeData{
 		Username:   "kuu_abc123",
-		Password:   "secret-pw",
 		ServerName: "minecraft-2GB-7",
 		Game:       "minecraft",
 		Port:       25565,
@@ -52,7 +51,7 @@ func TestRenderWelcomeIncludesAllFields(t *testing.T) {
 	if subject == "" {
 		t.Fatalf("subject must be non-empty")
 	}
-	for _, want := range []string{"kuu_abc123", "secret-pw", "minecraft-2GB-7", "minecraft", "25565"} {
+	for _, want := range []string{"kuu_abc123", "minecraft-2GB-7", "minecraft", "25565", PanelURL} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("body missing %q:\n%s", want, body)
 		}
@@ -65,7 +64,6 @@ func TestRenderWelcomeSanitizesUserControlledFields(t *testing.T) {
 	// the field appearing in the body but with newlines stripped.
 	_, body := RenderWelcome(WelcomeData{
 		Username:   "evil\r\nBcc: attacker@example.com",
-		Password:   "pw",
 		ServerName: "ok",
 		Game:       "minecraft",
 		Port:       1,
@@ -86,5 +84,24 @@ func TestBackoffForGrowsAndCaps(t *testing.T) {
 	}
 	if backoffFor(1000) != maxBackoff {
 		t.Fatalf("backoffFor must cap at maxBackoff (%v), got %v", maxBackoff, backoffFor(1000))
+	}
+}
+
+func TestRenderWelcomeLoginInstructions(t *testing.T) {
+	_, newBody := RenderWelcome(WelcomeData{Username: "u", NewAccount: true})
+	if !strings.Contains(newBody, "Setup Your Account") || !strings.Contains(newBody, ForgotPasswordURL) {
+		t.Errorf("new-account email must point to the panel's setup email and reset page:\n%s", newBody)
+	}
+
+	_, returningBody := RenderWelcome(WelcomeData{Username: "u"})
+	if strings.Contains(returningBody, "Setup Your Account") || !strings.Contains(returningBody, "existing Kuu panel account") {
+		t.Errorf("returning-customer email should say to use the existing account:\n%s", returningBody)
+	}
+
+	// The body is stored in pending_emails; it must never carry a password.
+	for _, body := range []string{newBody, returningBody} {
+		if strings.Contains(body, "Password:") {
+			t.Errorf("email body contains a password line:\n%s", body)
+		}
 	}
 }

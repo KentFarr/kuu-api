@@ -14,7 +14,7 @@ import (
 
 // PteroClient is the subset of the Pterodactyl Application API we use.
 type PteroClient interface {
-	CreateUser(ctx context.Context, email, requestedUsername string) (*pterodactyl.UserAttributes, string, pterodactyl.UsernameSource, error)
+	CreateUser(ctx context.Context, email, requestedUsername string) (*pterodactyl.UserAttributes, pterodactyl.UsernameSource, error)
 	DeleteUser(ctx context.Context, userID int) error
 	PickLeastLoadedNode(ctx context.Context, nodeIDs []int, requiredMB int) (int, *pterodactyl.NodeUtilization, error)
 	FindFreeAllocation(ctx context.Context, nodeID int, minPort, maxPort int) (*pterodactyl.AllocationAttributes, error)

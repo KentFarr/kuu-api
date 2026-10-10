@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/KentFarr/kuu-api/internal/database"
+	"github.com/KentFarr/kuu-api/internal/email"
 )
 
 const supportOKMessage = "If an active subscription exists"
@@ -28,20 +29,7 @@ func (f *fakeSupportStore) GetLatestActiveServerByCustomerID(int) (*database.Ser
 }
 
 type fakeSupportPtero struct {
-	passwords map[int]string // user ID -> new password
-	resetErr  error
-	fqdnErr   error
-}
-
-func (f *fakeSupportPtero) UpdateUserPassword(_ context.Context, userID int, pw string) error {
-	if f.resetErr != nil {
-		return f.resetErr
-	}
-	if f.passwords == nil {
-		f.passwords = map[int]string{}
-	}
-	f.passwords[userID] = pw
-	return nil
+	fqdnErr error
 }
 
 func (f *fakeSupportPtero) GetNodeFQDN(context.Context, int) (string, error) {
@@ -81,7 +69,7 @@ func supportPost(handler http.HandlerFunc, body string) *httptest.ResponseRecord
 	return rec
 }
 
-func TestResendWelcomeResetsPasswordAndEmails(t *testing.T) {
+func TestResendWelcomeEmailsServerDetails(t *testing.T) {
 	ptero := &fakeSupportPtero{}
 	queue := &fakeEnqueuer{}
 	h := &SupportHandler{
@@ -95,15 +83,15 @@ func TestResendWelcomeResetsPasswordAndEmails(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	newPW, ok := ptero.passwords[42]
-	if !ok {
-		t.Fatal("pterodactyl password was not reset")
-	}
 	if len(queue.sent) != 1 || queue.sent[0].To != "alice@example.com" {
 		t.Fatalf("emails = %+v, want one to the normalized address", queue.sent)
 	}
-	if body := queue.sent[0].Body; !strings.Contains(body, newPW) || !strings.Contains(body, "node7.test") {
-		t.Error("email does not contain the new password and node address")
+	body := queue.sent[0].Body
+	if !strings.Contains(body, "node7.test") || !strings.Contains(body, email.ForgotPasswordURL) {
+		t.Errorf("email should contain the node address and the panel's reset link:\n%s", body)
+	}
+	if strings.Contains(body, "Password:") {
+		t.Errorf("email contains a password:\n%s", body)
 	}
 }
 
@@ -141,10 +129,6 @@ func TestResendWelcomeErrors(t *testing.T) {
 		{"empty email", `{"email":"  "}`, &SupportHandler{}, http.StatusBadRequest, false},
 		{"lookup fails", `{"email":"a@b.c"}`, &SupportHandler{DB: &fakeSupportStore{err: errors.New("db")}}, http.StatusInternalServerError, false},
 		{"no active server", `{"email":"a@b.c"}`, &SupportHandler{DB: &fakeSupportStore{customer: existingCustomer()}}, http.StatusOK, false},
-		{"password reset fails", `{"email":"a@b.c"}`, &SupportHandler{
-			DB:          &fakeSupportStore{customer: existingCustomer(), server: &database.Server{}},
-			PteroClient: &fakeSupportPtero{resetErr: errors.New("panel down")},
-		}, http.StatusInternalServerError, false},
 		{"node lookup fails uses fallback", `{"email":"a@b.c"}`, &SupportHandler{
 			DB:          &fakeSupportStore{customer: existingCustomer(), server: &database.Server{}},
 			PteroClient: &fakeSupportPtero{fqdnErr: errors.New("panel down")},

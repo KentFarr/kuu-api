@@ -12,7 +12,6 @@ import (
 	"github.com/KentFarr/kuu-api/internal/database"
 	"github.com/KentFarr/kuu-api/internal/email"
 	"github.com/KentFarr/kuu-api/internal/logging"
-	"github.com/KentFarr/kuu-api/internal/pterodactyl"
 )
 
 // supportStore is the part of *database.DB the support endpoints read.
@@ -23,7 +22,6 @@ type supportStore interface {
 
 // supportPtero is the part of *pterodactyl.Client the support endpoints use.
 type supportPtero interface {
-	UpdateUserPassword(ctx context.Context, userID int, newPassword string) error
 	GetNodeFQDN(ctx context.Context, nodeID int) (string, error)
 }
 
@@ -91,32 +89,17 @@ func (h *SupportHandler) HandleResendWelcome(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// 3. Reset password in Pterodactyl
-	newPassword, err := pterodactyl.GeneratePassword()
-	if err != nil {
-		logger.Error("failed to generate new password", "err", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-
-	err = h.PteroClient.UpdateUserPassword(r.Context(), *customer.PterodactylUserID, newPassword)
-	if err != nil {
-		logger.Error("failed to reset pterodactyl password", "err", err)
-		http.Error(w, "failed to reset password", http.StatusInternalServerError)
-		return
-	}
-
-	// 4. Get Node Address
+	// 3. Get Node Address. The password isn't touched: the email points
+	// to the panel's own "Forgot password" page instead.
 	nodeAddr, err := h.PteroClient.GetNodeFQDN(r.Context(), server.NodeID)
 	if err != nil {
 		logger.Warn("failed to get node fqdn, using fallback", "err", err)
 		nodeAddr = "node1.kuu.gg"
 	}
 
-	// 5. Enqueue Email
+	// 4. Enqueue Email
 	subject, body := email.RenderWelcome(email.WelcomeData{
 		Username:    *customer.PterodactylUsername,
-		Password:    newPassword,
 		ServerName:  server.ServerName,
 		Game:        server.Game,
 		Port:        server.Port,

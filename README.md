@@ -19,7 +19,7 @@ Go backend that turns a Stripe Checkout payment into a running game server on a 
 8. **Server.** The server is created on the panel with the variant's egg, Docker image, environment and the plan's limits. If the allocation was taken in the meantime (HTTP 422), it re-picks a node and retries, up to 3 attempts.
 9. **Server row.** The server is recorded in Postgres, linked to the customer and subscription.
 10. **DNS.** If a subdomain was chosen and Cloudflare is configured, a CNAME `<subdomain>.kuu.gg → node` is created.
-11. **Welcome email.** The panel login is queued in `pending_emails`, and a background worker sends it.
+11. **Welcome email.** The server details are queued in `pending_emails`, and a background worker sends them. For a new account, Pterodactyl separately emails a one-time link to set a password, so kuu-api never handles one.
 
 If any of steps 5–9 fails, everything created so far is undone, the event claim is released, and the webhook returns 500 so Stripe's retry starts clean.
 
@@ -69,14 +69,15 @@ What runs in the box:
 
 **Least-loaded node selection and per-game ports.** Each provision queries every configured node in parallel (cached for 10 seconds to protect the panel under bursts). Nodes without enough free memory for the plan, or with no free allocations, are skipped; of the rest, the one with the most free memory wins, with free allocations as the tie-break. Each game has its own port range (Minecraft 25565–25700, Rust 28015–28200, FiveM 30120–30200, GMod 27015–27200), so players see familiar ports. The first free allocation in range is used. Two concurrent provisions can race for the same allocation; Pterodactyl rejects the loser with a 422, which is retried on a freshly picked node.
 
-**Email outbox.** The welcome email carries the customer's login, so losing it is costly. Sending inline from the webhook would tie provisioning success to SMTP availability. Instead the rendered email is written to `pending_emails`, and a worker polls the table, claims due rows with `FOR UPDATE SKIP LOCKED` (so several instances can run safely), and retries failures with quadratic backoff capped at an hour. Operators can list stuck emails and force a retry through `/admin/emails`.
+**Email outbox.** The welcome email is how the customer learns their server is ready. Sending inline from the webhook would tie provisioning success to SMTP availability. Instead the rendered email is written to `pending_emails`, and a worker polls the table, claims due rows with `FOR UPDATE SKIP LOCKED` (so several instances can run safely), and retries failures with quadratic backoff capped at an hour. Operators can list stuck emails and force a retry through `/admin/emails`.
+
+**No passwords in email.** kuu-api used to generate the panel password and send it in the welcome email, which meant it sat in plaintext in `pending_emails` and in the customer's inbox. Now the panel account is created without a password, and Pterodactyl's own flow emails the customer a 60-minute "Setup Your Account" link; its "Forgot password" page covers expired links and later resets. kuu-api never sees a password, so the welcome email only carries server details, and returning customers get one for each new server too. The cost is a second email with panel branding, and if provisioning rolls back after the account was created, the customer may receive a setup link for an account that no longer exists (the retry sends a working one).
 
 **Suspend, then reap.** A cancellation or failed payment suspends the server instead of deleting it. That gives a customer who cancelled by mistake, or whose card failed, two weeks to resubscribe with their world intact, or to ask support for their files (a suspended server is locked in the panel). Fourteen days is mid-range for game hosts (7–30 days is typical) and keeps node disks from filling with abandoned servers. After 14 days a daily reaper deletes the server from Pterodactyl, its DNS record and its database row. Customer and subscription rows and the panel account are kept, so billing history survives and a returning customer keeps their login.
 
 **Trade-offs and what I'd change.**
 
 - *Provisioning runs inside the webhook request.* It's simple and the result is visible in one log trace, but a slow panel makes Stripe wait. Stripe's retries plus the idempotency claim keep it correct. At larger scale I'd acknowledge the webhook immediately and provision from a job queue.
-- *The welcome email contains a generated password.* Email isn't a secure channel, and the password sits in `pending_emails` until sent. The better design is a one-time set-password link.
 - *The first failed payment suspends the server.* Stripe retries failed payments for days, so a temporarily declined card shouldn't cost the customer their server. The fix is to suspend only when Stripe gives up (subscription `unpaid` or `canceled`) and unsuspend on recovery.
 - *Configuration is code.* Games, variants and plans live in `internal/plans/plans.go`. That keeps the catalog type-checked and reviewed, but every new game needs a deploy.
 
@@ -176,7 +177,7 @@ SMTP and Cloudflare are optional: leave them empty and emails stay queued in Pos
 | ------ | -------------------------------- | ------------- | ------- |
 | POST   | `/api/checkout`                  | rate-limited  | Creates a Stripe Checkout Session |
 | POST   | `/api/webhook`                   | Stripe sig    | Receives Stripe events (idempotent) |
-| POST   | `/api/support/resend-welcome`    | rate-limited  | Resets the panel password and re-sends the welcome email |
+| POST   | `/api/support/resend-welcome`    | rate-limited  | Re-sends the server details, with a link to the panel's password reset |
 | POST   | `/api/support/manage`            | rate-limited  | Emails a Stripe billing-portal link |
 | GET    | `/livez`                         | open          | Liveness — always 200 if process is up |
 | GET    | `/readyz`                        | open          | Readiness — pings DB, panel, SMTP |

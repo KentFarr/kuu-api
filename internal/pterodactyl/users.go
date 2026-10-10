@@ -2,7 +2,6 @@ package pterodactyl
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -31,14 +30,6 @@ const (
 )
 
 const friendlyGenerateAttempts = 5
-
-func GeneratePassword() (string, error) {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		return "", fmt.Errorf("failed to generate password: %w", err)
-	}
-	return hex.EncodeToString(b), nil
-}
 
 // hashUsername is the legacy fallback: deterministic, guaranteed unique per
 // email, but ugly. Used only when friendly generation collides repeatedly.
@@ -82,12 +73,12 @@ func (c *Client) pickGeneratedUsername(ctx context.Context, email string, prior 
 	return hashUsername(email), UsernameSourceHashFallback, prior
 }
 
-func (c *Client) CreateUser(ctx context.Context, email, requestedUsername string) (*UserAttributes, string, UsernameSource, error) {
-	password, err := GeneratePassword()
-	if err != nil {
-		return nil, "", "", err
-	}
-
+// CreateUser creates a panel account without a password. Pterodactyl then
+// emails the user an "Account Created" message with a one-time link to set
+// their own password (valid for 60 minutes; after that, the panel's
+// "Forgot password" page issues a new one). We never see or store the
+// password.
+func (c *Client) CreateUser(ctx context.Context, email, requestedUsername string) (*UserAttributes, UsernameSource, error) {
 	username, source, lookupErr := c.pickUsername(ctx, email, requestedUsername)
 	_ = lookupErr // surfaced via source==hash_fallback or generated; caller logs source
 
@@ -96,20 +87,19 @@ func (c *Client) CreateUser(ctx context.Context, email, requestedUsername string
 		"username":   username,
 		"first_name": "Kuu",
 		"last_name":  "Player",
-		"password":   password,
 	}
 
 	respBytes, err := c.doRequest(ctx, "POST", "/api/application/users", body)
 	if err != nil {
-		return nil, "", "", fmt.Errorf("failed to create user: %w", err)
+		return nil, "", fmt.Errorf("failed to create user: %w", err)
 	}
 
 	var resp UserResponse
 	if err := json.Unmarshal(respBytes, &resp); err != nil {
-		return nil, "", "", fmt.Errorf("failed to parse user response: %w", err)
+		return nil, "", fmt.Errorf("failed to parse user response: %w", err)
 	}
 
-	return &resp.Attributes, password, source, nil
+	return &resp.Attributes, source, nil
 }
 
 func (c *Client) DeleteUser(ctx context.Context, userID int) error {
@@ -118,35 +108,5 @@ func (c *Client) DeleteUser(ctx context.Context, userID int) error {
 	if err != nil {
 		return fmt.Errorf("failed to delete user %d: %w", userID, err)
 	}
-	return nil
-}
-
-func (c *Client) UpdateUserPassword(ctx context.Context, userID int, newPassword string) error {
-	// Pterodactyl requires email, username, first_name, and last_name even for a password update
-	// We'll fetch the user first to get their current details
-	path := fmt.Sprintf("/api/application/users/%d", userID)
-	respBytes, err := c.doRequest(ctx, "GET", path, nil)
-	if err != nil {
-		return fmt.Errorf("failed to fetch user %d: %w", userID, err)
-	}
-
-	var resp UserResponse
-	if err := json.Unmarshal(respBytes, &resp); err != nil {
-		return fmt.Errorf("failed to parse user %d: %w", userID, err)
-	}
-
-	body := map[string]interface{}{
-		"email":      resp.Attributes.Email,
-		"username":   resp.Attributes.Username,
-		"first_name": "Kuu",
-		"last_name":  "Player",
-		"password":   newPassword,
-	}
-
-	_, err = c.doRequest(ctx, "PATCH", path, body)
-	if err != nil {
-		return fmt.Errorf("failed to update user %d password: %w", userID, err)
-	}
-
 	return nil
 }

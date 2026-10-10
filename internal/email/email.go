@@ -44,16 +44,28 @@ func validRecipient(addr string) bool {
 	return parsed.Address == addr
 }
 
-// WelcomeData carries everything needed to render the new-server welcome
-// email. Decoupling rendering from sending lets the persisted email queue
-// store the final subject + body and replay them verbatim on retry.
+// PanelURL is where customers log in to manage their servers.
+const PanelURL = "https://panel.kuu.gg"
+
+// ForgotPasswordURL is the panel's own reset page. It emails a fresh
+// set-password link, so we never handle customer passwords.
+const ForgotPasswordURL = PanelURL + "/auth/password"
+
+// WelcomeData carries everything needed to render the server-ready email.
+// Decoupling rendering from sending lets the persisted email queue store
+// the final subject + body and replay them verbatim on retry.
+//
+// It deliberately has no password field: the body is stored in
+// pending_emails, and email isn't a secure channel.
 type WelcomeData struct {
 	Username    string
-	Password    string
 	ServerName  string
 	Game        string
 	Port        int
 	NodeAddress string
+	// NewAccount is true when this provision created the panel account, so
+	// Pterodactyl has just sent its own set-password email.
+	NewAccount bool
 }
 
 // RenderWelcome produces the (subject, body) pair for a welcome email. The
@@ -67,22 +79,26 @@ func RenderWelcome(d WelcomeData) (subject, body string) {
 		nodeAddr = "node1.kuu.gg" // Fallback
 	}
 
+	login := fmt.Sprintf(`Log in with your existing Kuu panel account. Forgot your password? Reset it here: %s`, ForgotPasswordURL)
+	if d.NewAccount {
+		login = fmt.Sprintf(`We've also sent you a separate email from the panel with a "Setup Your Account" button to choose your password. That link expires after 60 minutes; if it has, request a new one here: %s`, ForgotPasswordURL)
+	}
+
 	body = fmt.Sprintf(`Welcome to Kuu,
 
 We've finished provisioning your high-performance %s server. It's live and ready for your first login.
 
 ---
-YOUR CREDENTIALS
-Panel:    https://panel.kuu.gg
+YOUR PANEL LOGIN
+Panel:    %s
 Username: %s
-Password: %s
+
+%s
 ---
 
 SERVER DETAILS
 Name:    %s
 Connect: %s:%d
-
-Pro Tip: For security, we recommend changing your password under 'Account Settings' after your first login.
 
 Need help?
 Join our Discord for 24/7 support: https://discord.gg/b76772cCvs
@@ -91,8 +107,9 @@ Or simply reply to this email—a real person will get back to you.
 Happy gaming,
 The Kuu Team`,
 		sanitizeHeader(d.Game),
+		PanelURL,
 		sanitizeHeader(d.Username),
-		d.Password,
+		login,
 		sanitizeHeader(d.ServerName),
 		sanitizeHeader(nodeAddr),
 		d.Port,
