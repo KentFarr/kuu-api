@@ -91,6 +91,14 @@ func (c *Client) SuspendServer(ctx context.Context, serverID int) error {
 	return nil
 }
 
+func (c *Client) UnsuspendServer(ctx context.Context, serverID int) error {
+	path := fmt.Sprintf("/api/application/servers/%d/unsuspend", serverID)
+	if _, err := c.doRequest(ctx, "POST", path, nil); err != nil {
+		return fmt.Errorf("failed to unsuspend server %d: %w", serverID, err)
+	}
+	return nil
+}
+
 type listServersResponse struct {
 	Data []struct {
 		Attributes struct {

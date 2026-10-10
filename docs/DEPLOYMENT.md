@@ -488,12 +488,22 @@ failed (DB / Pterodactyl / SMTP).
 In the Stripe dashboard → Developers → Webhooks → **Add endpoint**:
 
 - URL: `https://api.kuu.gg/api/webhook`
-- Events: at minimum `checkout.session.completed` (provisions),
-  `customer.subscription.deleted` (suspends — server is reaped 14 days
-  later, see [§13 Subscription lifecycle](#13-subscription-lifecycle)),
-  and `invoice.payment_failed` (also suspends). Mirror exactly what
+- Events: all five that
   [internal/handlers/webhook.go](../internal/handlers/webhook.go)
-  switches on.
+  switches on:
+  - `checkout.session.completed` (provisions)
+  - `invoice.payment_failed` (marks the subscription past due and emails
+    the customer; does **not** suspend)
+  - `customer.subscription.updated` (suspends when Stripe gives up
+    retrying, restores when it's active again)
+  - `invoice.paid` (restores a server suspended for non-payment)
+  - `customer.subscription.deleted` (suspends — server is reaped 14 days
+    later, see [§13 Subscription lifecycle](#13-subscription-lifecycle))
+- In **Billing → Revenue recovery**, set "If all retries for a payment
+  fail" to **mark the subscription as unpaid** (customers who pay late
+  get their server back automatically) or **cancel the subscription**.
+  Don't choose "leave the subscription past-due": nothing would ever
+  suspend the server.
 - Save, then copy the **Signing secret** (`whsec_…`).
 
 Update `.env` on the VPS:
@@ -617,8 +627,10 @@ something is off:
 | Stripe event | DB effect | Server effect | Driven by |
 | ------------ | --------- | ------------- | --------- |
 | `checkout.session.completed` | inserts `customers`, `subscriptions`, `servers` rows | creates Pterodactyl user + server | provisioner |
-| `customer.subscription.deleted` | `subscriptions.status='suspended'`, `cancelled_at=NOW()` | suspends Pterodactyl server | webhook → provisioner |
-| `invoice.payment_failed` | same suspension path as above | suspends Pterodactyl server | webhook → provisioner |
+| `invoice.payment_failed` | `subscriptions.status='past_due'` (from active only); payment-failed email queued on the first attempt | none — server keeps running while Stripe retries | webhook → provisioner |
+| `customer.subscription.updated` (status `unpaid`) | `status='suspended'`, `suspended_reason='non_payment'`, `cancelled_at` set if empty | suspends Pterodactyl server | webhook → provisioner |
+| `customer.subscription.updated` (status `canceled`) or `customer.subscription.deleted` | `status='suspended'`, `suspended_reason='cancelled'`, `cancelled_at` set if empty | suspends Pterodactyl server | webhook → provisioner |
+| `invoice.paid` or `customer.subscription.updated` (status `active`) | past_due → active; suspended for `non_payment` → active, `cancelled_at` and reason cleared | unsuspends Pterodactyl server (non-payment only) | webhook → provisioner |
 | (none — internal timer) | deletes `servers` row when `cancelled_at < NOW() - 14d` | deletes Pterodactyl server | reaper (`internal/provisioner/reaper.go`) |
 
 **Suspended servers are kept for 14 days** before the daily reaper hard-

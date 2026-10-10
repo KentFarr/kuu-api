@@ -105,3 +105,10 @@ func TestRenderWelcomeLoginInstructions(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderPaymentFailed(t *testing.T) {
+	subject, body := RenderPaymentFailed("https://invoice.stripe.test/i/1")
+	if subject == "" || !strings.Contains(body, "https://invoice.stripe.test/i/1") {
+		t.Errorf("subject %q, body missing invoice link:\n%s", subject, body)
+	}
+}

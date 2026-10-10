@@ -20,11 +20,14 @@ const testWebhookSecret = "whsec_test"
 // fakeProvisioner records every call so tests can assert what the webhook
 // asked for. Set provisionErr / suspendErr to make the next calls fail.
 type fakeProvisioner struct {
-	mu           sync.Mutex
-	provisioned  []provisioner.Request
-	suspended    []string
-	provisionErr error
-	suspendErr   error
+	mu            sync.Mutex
+	provisioned   []provisioner.Request
+	suspended     []string // "subID:reason"
+	paymentFailed []provisioner.PaymentFailure
+	restored      []string
+	calls         []string // every call in order, e.g. "suspend sub_1 cancelled"
+	provisionErr  error
+	suspendErr    error
 }
 
 func (f *fakeProvisioner) ProvisionServer(_ context.Context, req provisioner.Request) (*provisioner.ProvisionResult, error) {
@@ -34,16 +37,34 @@ func (f *fakeProvisioner) ProvisionServer(_ context.Context, req provisioner.Req
 		return nil, f.provisionErr
 	}
 	f.provisioned = append(f.provisioned, req)
+	f.calls = append(f.calls, "provision "+req.CustomerEmail)
 	return &provisioner.ProvisionResult{Username: "kuu_test", ServerName: "test-server"}, nil
 }
 
-func (f *fakeProvisioner) SuspendServer(_ context.Context, stripeSubID string) error {
+func (f *fakeProvisioner) SuspendServer(_ context.Context, stripeSubID, reason string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.suspendErr != nil {
 		return f.suspendErr
 	}
-	f.suspended = append(f.suspended, stripeSubID)
+	f.suspended = append(f.suspended, stripeSubID+":"+reason)
+	f.calls = append(f.calls, "suspend "+stripeSubID+" "+reason)
+	return nil
+}
+
+func (f *fakeProvisioner) RecordPaymentFailure(_ context.Context, pf provisioner.PaymentFailure) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.paymentFailed = append(f.paymentFailed, pf)
+	f.calls = append(f.calls, "payment_failed "+pf.StripeSubID)
+	return nil
+}
+
+func (f *fakeProvisioner) RestoreAfterPayment(_ context.Context, stripeSubID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.restored = append(f.restored, stripeSubID)
+	f.calls = append(f.calls, "restore "+stripeSubID)
 	return nil
 }
 
@@ -210,40 +231,35 @@ func TestWebhookRejectsOversizedBody(t *testing.T) {
 	}
 }
 
+// invoiceEvent builds an invoice event for the given subscription.
+func invoiceEvent(t *testing.T, id, eventType, subID string, extra map[string]any) []byte {
+	invoice := map[string]any{"id": "in_" + id, "object": "invoice", "customer": "cus_1"}
+	if subID != "" {
+		invoice["parent"] = map[string]any{
+			"type":                 "subscription_details",
+			"subscription_details": map[string]any{"subscription": subID},
+		}
+	}
+	for k, v := range extra {
+		invoice[k] = v
+	}
+	return stripeEvent(t, id, eventType, invoice)
+}
+
+func subscriptionEvent(t *testing.T, id, eventType, subID, status string) []byte {
+	return stripeEvent(t, id, eventType, map[string]any{"id": subID, "object": "subscription", "status": status})
+}
+
 func TestWebhookRoutesEventsByType(t *testing.T) {
 	cases := []struct {
-		name          string
-		body          func(t *testing.T) []byte
-		wantSuspended []string
-		wantProvision int
+		name      string
+		body      func(t *testing.T) []byte
+		wantCalls []string
 	}{
 		{
-			name: "subscription deleted suspends",
-			body: func(t *testing.T) []byte {
-				return stripeEvent(t, "evt_del", "customer.subscription.deleted",
-					map[string]any{"id": "sub_gone", "object": "subscription"})
-			},
-			wantSuspended: []string{"sub_gone"},
-		},
-		{
-			name: "payment failed suspends the invoice's subscription",
-			body: func(t *testing.T) []byte {
-				return stripeEvent(t, "evt_pf", "invoice.payment_failed", map[string]any{
-					"id": "in_1", "object": "invoice", "customer": "cus_1",
-					"parent": map[string]any{
-						"type":                 "subscription_details",
-						"subscription_details": map[string]any{"subscription": "sub_unpaid"},
-					},
-				})
-			},
-			wantSuspended: []string{"sub_unpaid"},
-		},
-		{
-			name: "payment failed without a subscription does nothing",
-			body: func(t *testing.T) []byte {
-				return stripeEvent(t, "evt_pf2", "invoice.payment_failed",
-					map[string]any{"id": "in_2", "object": "invoice"})
-			},
+			name:      "checkout provisions",
+			body:      func(t *testing.T) []byte { return checkoutCompletedEvent(t, "evt_co") },
+			wantCalls: []string{"provision alice@example.com"},
 		},
 		{
 			name: "checkout without an email does nothing",
@@ -253,16 +269,71 @@ func TestWebhookRoutesEventsByType(t *testing.T) {
 			},
 		},
 		{
+			name: "subscription deleted suspends as cancelled",
+			body: func(t *testing.T) []byte {
+				return subscriptionEvent(t, "evt_del", "customer.subscription.deleted", "sub_gone", "canceled")
+			},
+			wantCalls: []string{"suspend sub_gone cancelled"},
+		},
+		{
+			name: "payment failed records the failure without suspending",
+			body: func(t *testing.T) []byte {
+				return invoiceEvent(t, "evt_pf", "invoice.payment_failed", "sub_1", nil)
+			},
+			wantCalls: []string{"payment_failed sub_1"},
+		},
+		{
+			name: "payment failed without a subscription does nothing",
+			body: func(t *testing.T) []byte {
+				return invoiceEvent(t, "evt_pf2", "invoice.payment_failed", "", nil)
+			},
+		},
+		{
+			name: "retries exhausted (unpaid) suspends for non-payment",
+			body: func(t *testing.T) []byte {
+				return subscriptionEvent(t, "evt_unpaid", "customer.subscription.updated", "sub_1", "unpaid")
+			},
+			wantCalls: []string{"suspend sub_1 non_payment"},
+		},
+		{
+			name: "retries exhausted (canceled) suspends as cancelled",
+			body: func(t *testing.T) []byte {
+				return subscriptionEvent(t, "evt_canc", "customer.subscription.updated", "sub_1", "canceled")
+			},
+			wantCalls: []string{"suspend sub_1 cancelled"},
+		},
+		{
+			name: "subscription back to active restores",
+			body: func(t *testing.T) []byte {
+				return subscriptionEvent(t, "evt_active", "customer.subscription.updated", "sub_1", "active")
+			},
+			wantCalls: []string{"restore sub_1"},
+		},
+		{
+			name: "past_due update is left to invoice.payment_failed",
+			body: func(t *testing.T) []byte {
+				return subscriptionEvent(t, "evt_pd", "customer.subscription.updated", "sub_1", "past_due")
+			},
+		},
+		{
+			name: "invoice paid restores",
+			body: func(t *testing.T) []byte {
+				return invoiceEvent(t, "evt_paid", "invoice.paid", "sub_1", nil)
+			},
+			wantCalls: []string{"restore sub_1"},
+		},
+		{
+			name: "one-off invoice paid does nothing",
+			body: func(t *testing.T) []byte {
+				return invoiceEvent(t, "evt_paid2", "invoice.paid", "", nil)
+			},
+		},
+		{
 			name: "unknown event type is acknowledged",
 			body: func(t *testing.T) []byte {
 				return stripeEvent(t, "evt_other", "customer.created",
 					map[string]any{"id": "cus_1", "object": "customer"})
 			},
-		},
-		{
-			name:          "checkout provisions",
-			body:          func(t *testing.T) []byte { return checkoutCompletedEvent(t, "evt_co") },
-			wantProvision: 1,
 		},
 	}
 
@@ -274,13 +345,32 @@ func TestWebhookRoutesEventsByType(t *testing.T) {
 			if rec.Code != http.StatusOK {
 				t.Fatalf("status = %d, want 200", rec.Code)
 			}
-			if strings.Join(prov.suspended, ",") != strings.Join(tc.wantSuspended, ",") {
-				t.Errorf("suspended = %v, want %v", prov.suspended, tc.wantSuspended)
-			}
-			if len(prov.provisioned) != tc.wantProvision {
-				t.Errorf("provisioned %d times, want %d", len(prov.provisioned), tc.wantProvision)
+			if strings.Join(prov.calls, ", ") != strings.Join(tc.wantCalls, ", ") {
+				t.Errorf("calls = %v, want %v", prov.calls, tc.wantCalls)
 			}
 		})
+	}
+}
+
+func TestWebhookPaymentFailedPassesInvoiceDetails(t *testing.T) {
+	h, prov, _ := newTestWebhookHandler()
+	body := invoiceEvent(t, "evt_pfd", "invoice.payment_failed", "sub_1", map[string]any{
+		"customer_email":     "alice@example.com",
+		"hosted_invoice_url": "https://invoice.stripe.test/i/1",
+		"attempt_count":      2,
+	})
+
+	if rec := serve(h, signedRequest(body, testWebhookSecret)); rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	want := provisioner.PaymentFailure{
+		StripeSubID:   "sub_1",
+		CustomerEmail: "alice@example.com",
+		InvoiceURL:    "https://invoice.stripe.test/i/1",
+		AttemptCount:  2,
+	}
+	if len(prov.paymentFailed) != 1 || prov.paymentFailed[0] != want {
+		t.Errorf("payment failures = %+v, want %+v", prov.paymentFailed, want)
 	}
 }
 

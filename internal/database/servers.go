@@ -82,6 +82,14 @@ func (db *DB) SuspendServer(subscriptionID int) error {
 	return err
 }
 
+func (db *DB) UnsuspendServer(subscriptionID int) error {
+	_, err := db.conn.Exec(
+		"UPDATE servers SET status = 'active' WHERE subscription_id = $1 AND status = 'suspended'",
+		subscriptionID,
+	)
+	return err
+}
+
 // ListServerPteroIDs returns every pterodactyl_server_id we have on record
 // for the given node. Used by the reconciliation endpoint to diff our DB
 // against what Pterodactyl actually reports.

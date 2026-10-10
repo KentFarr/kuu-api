@@ -148,6 +148,16 @@ func (f *fakePtero) SuspendServer(_ context.Context, serverID int) error {
 	return nil
 }
 
+func (f *fakePtero) UnsuspendServer(_ context.Context, serverID int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.fail.check("UnsuspendServer"); err != nil {
+		return err
+	}
+	delete(f.suspended, serverID)
+	return nil
+}
+
 func (f *fakePtero) DeleteServer(_ context.Context, serverID int) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -262,7 +272,9 @@ func (f *fakeStore) GetSubscriptionByStripeID(stripeSubID string) (*database.Sub
 	return nil, errors.New("subscription not found") // matches *database.DB
 }
 
-func (f *fakeStore) SuspendSubscription(stripeSubID string) error {
+// The subscription status methods mirror the SQL in database/subscriptions.go.
+
+func (f *fakeStore) SuspendSubscription(stripeSubID, reason string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.fail.check("SuspendSubscription"); err != nil {
@@ -270,7 +282,42 @@ func (f *fakeStore) SuspendSubscription(stripeSubID string) error {
 	}
 	for _, s := range f.subscriptions {
 		if s.StripeSubscriptionID == stripeSubID {
-			s.Status = "suspended"
+			s.Status = database.SubscriptionSuspended
+			s.SuspendedReason = &reason
+			if s.CancelledAt == nil {
+				now := time.Now()
+				s.CancelledAt = &now
+			}
+		}
+	}
+	return nil
+}
+
+func (f *fakeStore) MarkSubscriptionPastDue(stripeSubID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.fail.check("MarkSubscriptionPastDue"); err != nil {
+		return err
+	}
+	for _, s := range f.subscriptions {
+		if s.StripeSubscriptionID == stripeSubID && s.Status == database.SubscriptionActive {
+			s.Status = database.SubscriptionPastDue
+		}
+	}
+	return nil
+}
+
+func (f *fakeStore) ReactivateSubscription(stripeSubID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.fail.check("ReactivateSubscription"); err != nil {
+		return err
+	}
+	for _, s := range f.subscriptions {
+		if s.StripeSubscriptionID == stripeSubID {
+			s.Status = database.SubscriptionActive
+			s.SuspendedReason = nil
+			s.CancelledAt = nil
 		}
 	}
 	return nil
@@ -336,6 +383,20 @@ func (f *fakeStore) SuspendServer(subscriptionID int) error {
 	for _, s := range f.servers {
 		if s.SubscriptionID == subscriptionID {
 			s.Status = "suspended"
+		}
+	}
+	return nil
+}
+
+func (f *fakeStore) UnsuspendServer(subscriptionID int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.fail.check("UnsuspendServer"); err != nil {
+		return err
+	}
+	for _, s := range f.servers {
+		if s.SubscriptionID == subscriptionID && s.Status == "suspended" {
+			s.Status = "active"
 		}
 	}
 	return nil

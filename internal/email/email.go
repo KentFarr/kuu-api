@@ -138,6 +138,31 @@ The Kuu Team`, portalURL)
 	return subject, body
 }
 
+// RenderPaymentFailed produces the (subject, body) pair sent when a renewal
+// payment fails. invoiceURL is Stripe's hosted invoice page, where the
+// customer can pay that invoice with a different card; unlike a billing
+// portal session it stays valid for weeks.
+func RenderPaymentFailed(invoiceURL string) (subject, body string) {
+	subject = sanitizeHeader("Action needed: your Kuu payment didn't go through")
+	body = fmt.Sprintf(`Hi there,
+
+We couldn't charge your card for your Kuu server's renewal. Your server is still running, and we'll retry the payment automatically over the next few days.
+
+To avoid any interruption, you can pay now with a different card here:
+
+%s
+
+If the payment still can't be collected after the retries, your server will be suspended, and deleted 14 days after that.
+
+Need help?
+Join our Discord for 24/7 support: https://discord.gg/b76772cCvs
+Or simply reply to this email.
+
+Best,
+The Kuu Team`, invoiceURL)
+	return subject, body
+}
+
 // Ping verifies SMTP reachability with a TCP dial. We deliberately do not
 // open an SMTP session — that would burn an authentication round-trip on
 // every readiness probe and risk tripping rate limits on the relay.

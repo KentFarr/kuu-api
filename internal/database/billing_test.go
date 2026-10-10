@@ -112,7 +112,7 @@ func TestSubscriptionAndServerLifecycle(t *testing.T) {
 		t.Errorf("ListServerPteroIDs(1) = %v, %v; want [100]", ids, err)
 	}
 
-	if err := db.SuspendSubscription("sub_1"); err != nil {
+	if err := db.SuspendSubscription("sub_1", SuspendReasonCancelled); err != nil {
 		t.Fatalf("SuspendSubscription: %v", err)
 	}
 	if err := db.SuspendServer(sub.ID); err != nil {
@@ -146,7 +146,7 @@ func TestListReapableServers(t *testing.T) {
 	seedServer(t, db, "active@example.com", "sub_active", 3)
 
 	for _, sub := range []*Subscription{oldSub, newSub} {
-		if err := db.SuspendSubscription(sub.StripeSubscriptionID); err != nil {
+		if err := db.SuspendSubscription(sub.StripeSubscriptionID, SuspendReasonCancelled); err != nil {
 			t.Fatal(err)
 		}
 		if err := db.SuspendServer(sub.ID); err != nil {
@@ -163,5 +163,70 @@ func TestListReapableServers(t *testing.T) {
 	}
 	if len(servers) != 1 || servers[0].ID != oldSrv.ID {
 		t.Errorf("reapable = %+v, want only the server suspended 15 days ago", servers)
+	}
+}
+
+func TestSubscriptionPaymentStates(t *testing.T) {
+	db := newTestDB(t)
+	_, sub, srv := seedServer(t, db, "alice@example.com", "sub_1", 100)
+
+	get := func() *Subscription {
+		t.Helper()
+		s, err := db.GetSubscriptionByStripeID("sub_1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+
+	// A failed payment moves active → past_due.
+	if err := db.MarkSubscriptionPastDue("sub_1"); err != nil {
+		t.Fatal(err)
+	}
+	if s := get(); s.Status != SubscriptionPastDue || s.CancelledAt != nil {
+		t.Errorf("after failure: %+v, want past_due and not cancelled", s)
+	}
+
+	// Stripe gives up: suspended for non-payment.
+	if err := db.SuspendSubscription("sub_1", SuspendReasonNonPayment); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SuspendServer(sub.ID); err != nil {
+		t.Fatal(err)
+	}
+	first := get()
+	if first.Status != SubscriptionSuspended || first.SuspendedReason == nil || *first.SuspendedReason != SuspendReasonNonPayment || first.CancelledAt == nil {
+		t.Fatalf("after suspend: %+v", first)
+	}
+
+	// Another failure doesn't un-suspend it.
+	if err := db.MarkSubscriptionPastDue("sub_1"); err != nil {
+		t.Fatal(err)
+	}
+	if s := get(); s.Status != SubscriptionSuspended {
+		t.Errorf("past_due overwrote suspended: %+v", s)
+	}
+
+	// A second suspension changes the reason but keeps the reaper clock.
+	if err := db.SuspendSubscription("sub_1", SuspendReasonCancelled); err != nil {
+		t.Fatal(err)
+	}
+	if s := get(); *s.SuspendedReason != SuspendReasonCancelled || !s.CancelledAt.Equal(*first.CancelledAt) {
+		t.Errorf("after second suspend: reason %q, cancelled_at %v (was %v)", *s.SuspendedReason, s.CancelledAt, first.CancelledAt)
+	}
+
+	// Recovery clears everything.
+	if err := db.ReactivateSubscription("sub_1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UnsuspendServer(sub.ID); err != nil {
+		t.Fatal(err)
+	}
+	if s := get(); s.Status != SubscriptionActive || s.SuspendedReason != nil || s.CancelledAt != nil {
+		t.Errorf("after reactivate: %+v", s)
+	}
+	got, err := db.GetServerBySubscription(sub.ID)
+	if err != nil || got.ID != srv.ID || got.Status != "active" {
+		t.Errorf("server after unsuspend = %+v, %v", got, err)
 	}
 }
