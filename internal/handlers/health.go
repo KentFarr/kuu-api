@@ -27,7 +27,7 @@ type HealthHandler struct {
 
 // Live always returns 200 unless the process itself is wedged. The HTTP
 // server answering at all is the proof of liveness.
-func (h *HealthHandler) Live(w http.ResponseWriter, r *http.Request) {
+func (h *HealthHandler) Live(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{
 		"service": "kuu-api",
 		"status":  "ok",

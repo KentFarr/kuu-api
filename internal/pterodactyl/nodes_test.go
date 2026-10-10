@@ -37,7 +37,7 @@ func newPickServer(t *testing.T, fixtures map[int]nodeFixture) *httptest.Server 
 					id, f.memoryTotal, f.memoryUsed)
 			}
 		})
-		mux.HandleFunc(fmt.Sprintf("/api/application/nodes/%d/allocations", id), func(w http.ResponseWriter, r *http.Request) {
+		mux.HandleFunc(fmt.Sprintf("/api/application/nodes/%d/allocations", id), func(w http.ResponseWriter, _ *http.Request) {
 			if f.failAllocations {
 				http.Error(w, "boom", http.StatusInternalServerError)
 				return

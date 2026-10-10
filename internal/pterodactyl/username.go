@@ -18,12 +18,12 @@ const (
 )
 
 var (
-	ErrUsernameTooShort     = errors.New("username must be at least 3 characters")
-	ErrUsernameTooLong      = errors.New("username must be at most 32 characters")
-	ErrUsernameBadStart     = errors.New("username must start with a letter")
-	ErrUsernameBadChars     = errors.New("username may only contain letters, numbers, hyphens, and underscores")
-	ErrUsernameBadEnd       = errors.New("username must not end with a hyphen or underscore")
-	ErrUsernameReserved     = errors.New("username uses a reserved prefix")
+	ErrUsernameTooShort = errors.New("username must be at least 3 characters")
+	ErrUsernameTooLong  = errors.New("username must be at most 32 characters")
+	ErrUsernameBadStart = errors.New("username must start with a letter")
+	ErrUsernameBadChars = errors.New("username may only contain letters, numbers, hyphens, and underscores")
+	ErrUsernameBadEnd   = errors.New("username must not end with a hyphen or underscore")
+	ErrUsernameReserved = errors.New("username uses a reserved prefix")
 
 	usernameCharRE = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
@@ -67,7 +67,7 @@ func ValidateUsername(s string) error {
 		return ErrUsernameTooLong
 	}
 	first := s[0]
-	if !((first >= 'a' && first <= 'z') || (first >= 'A' && first <= 'Z')) {
+	if (first < 'a' || first > 'z') && (first < 'A' || first > 'Z') {
 		return ErrUsernameBadStart
 	}
 	last := s[len(s)-1]

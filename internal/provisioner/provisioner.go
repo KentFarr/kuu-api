@@ -322,9 +322,9 @@ func (p *Provisioner) createServerWithRetry(ctx context.Context, serverName stri
 	}
 
 	var (
-		lastErr         error
-		appliedVersion  string
-		nodeAddress     string
+		lastErr        error
+		appliedVersion string
+		nodeAddress    string
 	)
 	for attempt := 1; attempt <= allocationRetryAttempts; attempt++ {
 		if attempt > 1 {

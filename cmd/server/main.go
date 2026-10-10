@@ -40,7 +40,7 @@ func runHealthcheck() {
 		port = "8081"
 	}
 	client := &http.Client{Timeout: 3 * time.Second}
-	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%s/livez", port))
+	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%s/livez", port)) //nolint:gosec // G704: always loopback; PORT only picks the local port
 	if err != nil {
 		os.Exit(1)
 	}
@@ -214,7 +214,7 @@ func main() {
 
 	go func() {
 		log.Printf("kuu-api starting on %s", addr)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(http.ErrServerClosed, err) {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("server failed: %v", err)
 		}
 	}()

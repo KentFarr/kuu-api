@@ -61,7 +61,7 @@ type WelcomeData struct {
 // header is run through sanitizeHeader to neutralize CRLF injection.
 func RenderWelcome(d WelcomeData) (subject, body string) {
 	subject = sanitizeHeader("Your Kuu server is ready — Let's play!")
-	
+
 	nodeAddr := d.NodeAddress
 	if nodeAddr == "" {
 		nodeAddr = "node1.kuu.gg" // Fallback

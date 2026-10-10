@@ -189,8 +189,9 @@ func minecraftJavaResolver(version string) string {
 	// < 1.12   -> Java 8
 
 	major, minor := 0, 0
-	fmt.Sscanf(version, "1.%d.%d", &major, &minor)
-	// Note: Sscanf might fail for "1.21" (no patch), but major will be 21.
+	// Sscanf returns an error for "1.21" (no patch), but major is still
+	// parsed as 21, which is all we need.
+	_, _ = fmt.Sscanf(version, "1.%d.%d", &major, &minor)
 
 	if major >= 21 || (major == 20 && minor >= 5) {
 		return "ghcr.io/pterodactyl/yolks:java_21"
@@ -267,7 +268,7 @@ var Games = map[string]Game{
 				NestID:        1,
 				ImageResolver: minecraftJavaResolver,
 				Startup:       "java -Xms128M -Xmx{{SERVER_MEMORY}}M -jar {{SERVER_JARFILE}}",
-				TuningHook:  minecraftTuning,
+				TuningHook:    minecraftTuning,
 				Environment: map[string]string{
 					"SERVER_JARFILE": "server.jar",
 					"BUILD_TYPE":     "recommended",

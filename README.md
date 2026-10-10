@@ -1,5 +1,7 @@
 # kuu-api
 
+[![CI](https://github.com/KentFarr/kuu-api/actions/workflows/ci.yml/badge.svg)](https://github.com/KentFarr/kuu-api/actions/workflows/ci.yml)
+
 Go service that turns a Stripe Checkout payment into a running game server on
 a Pterodactyl panel. The webhook handler is the entire product surface: a
 successful `checkout.session.completed` event provisions a Pterodactyl user
