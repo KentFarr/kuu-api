@@ -225,7 +225,7 @@ make lint     # golangci-lint (config in .golangci.yml)
 make build    # binaries in bin/
 ```
 
-Unit tests need no external services: the provisioner and webhook handler are tested against in-memory fakes of Pterodactyl, Postgres, DNS and email. That includes a table-driven test that injects a failure at each provisioning step and checks that nothing is left behind.
+Unit tests need no external services: the provisioner and webhook handler are tested against in-memory fakes of Pterodactyl, Postgres, DNS and email. That includes a table-driven test that injects a failure at each provisioning step and checks that nothing is left behind. Checkout and billing-portal tests point stripe-go at a local fake server.
 
 Database integration tests run against a real Postgres when `TEST_DATABASE_URL` points at a throwaway database, and skip otherwise:
 
@@ -236,7 +236,7 @@ TEST_DATABASE_URL='postgres://postgres:test@localhost:5433/postgres?sslmode=disa
 
 CI runs everything, including the database tests against a Postgres service container, on every pull request.
 
-Coverage (from CI): provisioner 60.1%, handlers 20.3%, database 14.8%. Test coverage is actively being extended.
+Coverage (from CI): handlers 83.4%, provisioner 82.1%, database 59.8%.
 
 ## Deploying
 
