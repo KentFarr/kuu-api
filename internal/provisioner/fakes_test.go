@@ -25,6 +25,11 @@ func newTestProvisioner(t *testing.T) (*Provisioner, *fakePtero, *fakeStore, *fa
 	// plans reads price IDs from the environment on every lookup.
 	t.Setenv("STRIPE_PRICE_2GB", testPriceID)
 
+	// Keep allocation retries from sleeping for seconds.
+	origBackoff := allocationRetryBackoff
+	allocationRetryBackoff = []time.Duration{time.Millisecond}
+	t.Cleanup(func() { allocationRetryBackoff = origBackoff })
+
 	ptero := newFakePtero()
 	store := newFakeStore()
 	dns := &fakeDNS{fail: failOn{}}
@@ -59,6 +64,11 @@ type fakePtero struct {
 	users     map[int]pterodactyl.UserAttributes
 	servers   map[int]pterodactyl.CreateServerParams
 	suspended map[int]bool
+
+	// createServerErrs are returned by successive CreateServer calls before
+	// it starts succeeding, e.g. a 422 to simulate an allocation collision.
+	createServerErrs  []error
+	createServerCalls int
 }
 
 func newFakePtero() *fakePtero {
@@ -114,7 +124,13 @@ func (f *fakePtero) FindFreeAllocation(_ context.Context, _ int, minPort, _ int)
 func (f *fakePtero) CreateServer(_ context.Context, params pterodactyl.CreateServerParams) (*pterodactyl.ServerAttributes, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.createServerCalls++
 	if err := f.fail.check("CreateServer"); err != nil {
+		return nil, err
+	}
+	if len(f.createServerErrs) > 0 {
+		err := f.createServerErrs[0]
+		f.createServerErrs = f.createServerErrs[1:]
 		return nil, err
 	}
 	f.nextID++
