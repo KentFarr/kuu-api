@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -14,10 +15,27 @@ import (
 	"github.com/KentFarr/kuu-api/internal/pterodactyl"
 )
 
+// supportStore is the part of *database.DB the support endpoints read.
+type supportStore interface {
+	GetCustomerByEmail(email string) (*database.Customer, error)
+	GetLatestActiveServerByCustomerID(customerID int) (*database.Server, error)
+}
+
+// supportPtero is the part of *pterodactyl.Client the support endpoints use.
+type supportPtero interface {
+	UpdateUserPassword(ctx context.Context, userID int, newPassword string) error
+	GetNodeFQDN(ctx context.Context, nodeID int) (string, error)
+}
+
+// emailEnqueuer is satisfied by *email.Queue.
+type emailEnqueuer interface {
+	Enqueue(toAddr, subject, body string) error
+}
+
 type SupportHandler struct {
-	DB          *database.DB
-	PteroClient *pterodactyl.Client
-	EmailQueue  *email.Queue
+	DB          supportStore
+	PteroClient supportPtero
+	EmailQueue  emailEnqueuer
 	ReturnURL   string
 }
 
