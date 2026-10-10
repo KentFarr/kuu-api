@@ -5,6 +5,22 @@ import (
 	"time"
 )
 
+// Subscription statuses. A subscription is active until a payment fails
+// (past_due); it is suspended when Stripe gives up retrying or the customer
+// cancels, and returns to active if a suspended-for-non-payment invoice is
+// paid.
+const (
+	SubscriptionActive    = "active"
+	SubscriptionPastDue   = "past_due"
+	SubscriptionSuspended = "suspended"
+)
+
+// Reasons recorded in suspended_reason.
+const (
+	SuspendReasonNonPayment = "non_payment"
+	SuspendReasonCancelled  = "cancelled"
+)
+
 type Subscription struct {
 	ID                   int        `db:"id"`
 	CustomerID           int        `db:"customer_id"`
@@ -13,7 +29,8 @@ type Subscription struct {
 	Game                 string     `db:"game"`
 	Status               string     `db:"status"`
 	CreatedAt            time.Time  `db:"created_at"`
-	CancelledAt          *time.Time `db:"cancelled_at"`
+	CancelledAt          *time.Time `db:"cancelled_at"` // when it was suspended; the reaper counts from here
+	SuspendedReason      *string    `db:"suspended_reason"`
 }
 
 func (db *DB) CreateSubscription(customerID int, stripeSubID, stripePriceID, game string) (*Subscription, error) {
@@ -41,9 +58,37 @@ func (db *DB) GetSubscriptionByStripeID(stripeSubID string) (*Subscription, erro
 	return &sub, nil
 }
 
-func (db *DB) SuspendSubscription(stripeSubID string) error {
+// SuspendSubscription marks the subscription suspended for the given reason.
+// cancelled_at keeps its first value, so a second suspension (e.g. unpaid,
+// then deleted) doesn't restart the reaper's grace period.
+func (db *DB) SuspendSubscription(stripeSubID, reason string) error {
 	_, err := db.conn.Exec(
-		"UPDATE subscriptions SET status = 'suspended', cancelled_at = NOW() WHERE stripe_subscription_id = $1",
+		`UPDATE subscriptions
+		 SET status = 'suspended', suspended_reason = $2, cancelled_at = COALESCE(cancelled_at, NOW())
+		 WHERE stripe_subscription_id = $1`,
+		stripeSubID, reason,
+	)
+	return err
+}
+
+// MarkSubscriptionPastDue records a failed payment that Stripe is still
+// retrying. Only an active subscription moves to past_due; a suspended one
+// stays suspended.
+func (db *DB) MarkSubscriptionPastDue(stripeSubID string) error {
+	_, err := db.conn.Exec(
+		"UPDATE subscriptions SET status = 'past_due' WHERE stripe_subscription_id = $1 AND status = 'active'",
+		stripeSubID,
+	)
+	return err
+}
+
+// ReactivateSubscription returns the subscription to active after payment
+// recovers, clearing the suspension so the reaper no longer counts it.
+func (db *DB) ReactivateSubscription(stripeSubID string) error {
+	_, err := db.conn.Exec(
+		`UPDATE subscriptions
+		 SET status = 'active', suspended_reason = NULL, cancelled_at = NULL
+		 WHERE stripe_subscription_id = $1`,
 		stripeSubID,
 	)
 	return err

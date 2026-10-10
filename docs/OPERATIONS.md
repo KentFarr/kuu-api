@@ -89,11 +89,21 @@ this report. Keep the env in sync with the panel.
 Cancellation, payment failure, and hard-deletion all run through the
 same wiring. Walking the timeline for a single customer:
 
-1. Stripe sends `customer.subscription.deleted` (cancellation) or
-   `invoice.payment_failed`. The webhook handler calls
+0. A renewal payment fails: Stripe sends `invoice.payment_failed`. The
+   subscription becomes `past_due` and the customer is emailed a link
+   to pay the invoice with another card. **The server keeps running**
+   while Stripe retries. If a retry succeeds (`invoice.paid`), the
+   subscription goes back to `active` and nothing else happens.
+1. Stripe gives up (`customer.subscription.updated` with status
+   `unpaid` or `canceled`) or the customer cancels
+   (`customer.subscription.deleted`). The webhook handler calls
    `Provisioner.SuspendServer`, which suspends the Pterodactyl server,
-   sets `subscriptions.status='suspended'` and `cancelled_at=NOW()`,
-   and sets `servers.status='suspended'`. The customer can no longer
+   sets `subscriptions.status='suspended'`, records
+   `suspended_reason` (`non_payment` or `cancelled`), sets
+   `cancelled_at` if it isn't already set, and sets
+   `servers.status='suspended'`. If an `unpaid` subscription's invoice
+   is paid later, `invoice.paid` unsuspends it automatically (only for
+   `non_payment`, and only until the reaper has run). The customer can no longer
    start their server but their world files are intact on the panel
    node.
 2. The daily `Reaper` (in `internal/provisioner/reaper.go`) wakes up

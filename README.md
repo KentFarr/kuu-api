@@ -23,7 +23,7 @@ Go backend that turns a Stripe Checkout payment into a running game server on a 
 
 If any of steps 5–9 fails, everything created so far is undone, the event claim is released, and the webhook returns 500 so Stripe's retry starts clean.
 
-Cancellation (`customer.subscription.deleted`) and failed payments (`invoice.payment_failed`) suspend the server. A daily reaper deletes servers that have been suspended for more than 14 days.
+A failed renewal payment doesn't suspend anything while Stripe retries it; the customer gets an email with a link to pay. The server is suspended when Stripe gives up or the customer cancels, and restored automatically if an unpaid invoice is settled. A daily reaper deletes servers that have been suspended for more than 14 days.
 
 ## How it fits together
 
@@ -73,12 +73,14 @@ What runs in the box:
 
 **No passwords in email.** kuu-api used to generate the panel password and send it in the welcome email, which meant it sat in plaintext in `pending_emails` and in the customer's inbox. Now the panel account is created without a password, and Pterodactyl's own flow emails the customer a 60-minute "Setup Your Account" link; its "Forgot password" page covers expired links and later resets. kuu-api never sees a password, so the welcome email only carries server details, and returning customers get one for each new server too. The cost is a second email with panel branding, and if provisioning rolls back after the account was created, the customer may receive a setup link for an account that no longer exists (the retry sends a working one).
 
-**Suspend, then reap.** A cancellation or failed payment suspends the server instead of deleting it. That gives a customer who cancelled by mistake, or whose card failed, two weeks to resubscribe with their world intact, or to ask support for their files (a suspended server is locked in the panel). Fourteen days is mid-range for game hosts (7–30 days is typical) and keeps node disks from filling with abandoned servers. After 14 days a daily reaper deletes the server from Pterodactyl, its DNS record and its database row. Customer and subscription rows and the panel account are kept, so billing history survives and a returning customer keeps their login.
+**Grace period for failed payments.** Stripe retries a failed renewal for days (Smart Retries), and most declines are temporary, so `invoice.payment_failed` only marks the subscription `past_due` and emails the customer a link to Stripe's hosted invoice page, where they can pay with another card. That link stays valid for weeks; a billing-portal session link would expire long before the customer opened the email. The server is suspended only when Stripe gives up (`customer.subscription.updated` with status `unpaid` or `canceled`) or the subscription is deleted. Each suspension records a reason, so `invoice.paid` restores a server suspended for non-payment but never one the customer cancelled. A second suspension keeps the original timestamp, so it can't extend the 14-day grace period.
+
+**Suspend, then reap.** A cancellation or exhausted payment retries suspend the server instead of deleting it. That gives a customer who cancelled by mistake, or whose card failed, two weeks to resubscribe with their world intact, or to ask support for their files (a suspended server is locked in the panel). Fourteen days is mid-range for game hosts (7–30 days is typical) and keeps node disks from filling with abandoned servers. After 14 days a daily reaper deletes the server from Pterodactyl, its DNS record and its database row. Customer and subscription rows and the panel account are kept, so billing history survives and a returning customer keeps their login.
 
 **Trade-offs and what I'd change.**
 
 - *Provisioning runs inside the webhook request.* It's simple and the result is visible in one log trace, but a slow panel makes Stripe wait. Stripe's retries plus the idempotency claim keep it correct. At larger scale I'd acknowledge the webhook immediately and provision from a job queue.
-- *The first failed payment suspends the server.* Stripe retries failed payments for days, so a temporarily declined card shouldn't cost the customer their server. The fix is to suspend only when Stripe gives up (subscription `unpaid` or `canceled`) and unsuspend on recovery.
+- *Webhook events can arrive out of order.* Stripe doesn't guarantee ordering, and the handler acts on the state inside each event. A delayed `unpaid` arriving after `invoice.paid` would re-suspend a paid-up server. Re-fetching the subscription from Stripe before acting would close that gap at the cost of an API call per event.
 - *Configuration is code.* Games, variants and plans live in `internal/plans/plans.go`. That keeps the catalog type-checked and reviewed, but every new game needs a deploy.
 
 ## Games and variants

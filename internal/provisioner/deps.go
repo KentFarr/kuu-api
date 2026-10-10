@@ -20,6 +20,7 @@ type PteroClient interface {
 	FindFreeAllocation(ctx context.Context, nodeID int, minPort, maxPort int) (*pterodactyl.AllocationAttributes, error)
 	CreateServer(ctx context.Context, params pterodactyl.CreateServerParams) (*pterodactyl.ServerAttributes, error)
 	SuspendServer(ctx context.Context, serverID int) error
+	UnsuspendServer(ctx context.Context, serverID int) error
 	DeleteServer(ctx context.Context, serverID int) error
 }
 
@@ -32,12 +33,15 @@ type Store interface {
 
 	CreateSubscription(customerID int, stripeSubID, stripePriceID, game string) (*database.Subscription, error)
 	GetSubscriptionByStripeID(stripeSubID string) (*database.Subscription, error)
-	SuspendSubscription(stripeSubID string) error
+	SuspendSubscription(stripeSubID, reason string) error
+	MarkSubscriptionPastDue(stripeSubID string) error
+	ReactivateSubscription(stripeSubID string) error
 	DeleteSubscription(subscriptionID int) error
 
 	CreateServer(p database.CreateServerParams) (*database.Server, error)
 	GetServerBySubscription(subscriptionID int) (*database.Server, error)
 	SuspendServer(subscriptionID int) error
+	UnsuspendServer(subscriptionID int) error
 	ListReapableServers(cutoff time.Time) ([]database.Server, error)
 	DeleteServerByID(id int) error
 }

@@ -429,8 +429,11 @@ func (p *Provisioner) createServerWithRetry(ctx context.Context, serverName stri
 	return nil, 0, 0, nodeAddress, appliedVersion, lastErr
 }
 
-func (p *Provisioner) SuspendServer(ctx context.Context, stripeSubID string) error {
-	logger := logging.FromContext(ctx).With("stripe_subscription_id", stripeSubID)
+// SuspendServer suspends the subscription's server on the panel and records
+// why (database.SuspendReasonNonPayment or database.SuspendReasonCancelled).
+// The reaper deletes it once it has been suspended for the grace period.
+func (p *Provisioner) SuspendServer(ctx context.Context, stripeSubID, reason string) error {
+	logger := logging.FromContext(ctx).With("stripe_subscription_id", stripeSubID, "reason", reason)
 	logger.Info("suspending server for subscription")
 
 	sub, err := p.DB.GetSubscriptionByStripeID(stripeSubID)
@@ -447,7 +450,7 @@ func (p *Provisioner) SuspendServer(ctx context.Context, stripeSubID string) err
 		}
 	}
 
-	if err := p.DB.SuspendSubscription(stripeSubID); err != nil {
+	if err := p.DB.SuspendSubscription(stripeSubID, reason); err != nil {
 		return fmt.Errorf("failed to suspend subscription record: %w", err)
 	}
 

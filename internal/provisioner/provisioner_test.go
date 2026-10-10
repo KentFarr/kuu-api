@@ -288,7 +288,7 @@ func TestSuspendServer(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := p.SuspendServer(context.Background(), "sub_123"); err != nil {
+	if err := p.SuspendServer(context.Background(), "sub_123", database.SuspendReasonCancelled); err != nil {
 		t.Fatalf("SuspendServer: %v", err)
 	}
 
@@ -310,7 +310,7 @@ func TestSuspendServer(t *testing.T) {
 func TestSuspendServerErrors(t *testing.T) {
 	t.Run("unknown subscription", func(t *testing.T) {
 		p, _, _, _, _ := newTestProvisioner(t)
-		if err := p.SuspendServer(context.Background(), "sub_missing"); err == nil {
+		if err := p.SuspendServer(context.Background(), "sub_missing", database.SuspendReasonCancelled); err == nil {
 			t.Error("expected an error")
 		}
 	})
@@ -321,7 +321,7 @@ func TestSuspendServerErrors(t *testing.T) {
 		}
 		ptero.fail["SuspendServer"] = true
 
-		if err := p.SuspendServer(context.Background(), "sub_123"); !errors.Is(err, errInjected) {
+		if err := p.SuspendServer(context.Background(), "sub_123", database.SuspendReasonNonPayment); !errors.Is(err, errInjected) {
 			t.Fatalf("err = %v, want the injected failure", err)
 		}
 		// The DB must not claim the server is suspended when it isn't.

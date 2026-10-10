@@ -380,7 +380,8 @@ Once the customer has paid, the lifecycle is:
 | State | Trigger | What the customer sees |
 | ----- | ------- | ---------------------- |
 | Active | Initial purchase succeeded | Server reachable, panel access works, SFTP works. |
-| Suspended | Subscription cancelled in Stripe, or `invoice.payment_failed` | Server stopped (won't start in panel). Customer's panel login still works; server files still on disk. |
+| Past due | A renewal payment failed; Stripe is retrying | Nothing changes: the server keeps running. The customer gets one email with a link to pay with another card. |
+| Suspended | Subscription cancelled, or Stripe gave up retrying a failed payment | Server stopped (won't start in panel). Customer's panel login still works; server files still on disk. If it was suspended for non-payment and the invoice is then paid, it's unsuspended automatically. |
 | Hard-deleted | 14 days after suspension, by the daily reaper | Server gone from panel. World files and configs are gone with it. Customer login still exists; a new purchase from the same email will reuse it. |
 
 A customer who cancels and changes their mind within 14 days can be
