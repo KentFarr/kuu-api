@@ -57,7 +57,7 @@ func (c *CloudflareClient) CreateCNAME(ctx context.Context, subdomain, target st
 		Type:    "CNAME",
 		Name:    fmt.Sprintf("%s.%s", subdomain, c.Domain),
 		Content: target,
-		TTL:     1,    // Automatic
+		TTL:     1,     // Automatic
 		Proxied: false, // Gray cloud for game servers
 	}
 

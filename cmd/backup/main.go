@@ -48,17 +48,17 @@ import (
 const objectKeyTimeFormat = "2006-01-02T150405Z"
 
 type config struct {
-	DatabaseURL     string
-	S3Endpoint      string
-	S3Bucket        string
-	S3AccessKey     string
-	S3SecretKey     string
-	S3Region        string
-	S3Prefix        string
-	S3UseSSL        bool
-	IntervalHours   int
-	RetentionDays   int
-	RunOnStart      bool
+	DatabaseURL   string
+	S3Endpoint    string
+	S3Bucket      string
+	S3AccessKey   string
+	S3SecretKey   string
+	S3Region      string
+	S3Prefix      string
+	S3UseSSL      bool
+	IntervalHours int
+	RetentionDays int
+	RunOnStart    bool
 }
 
 func loadConfig() (*config, error) {
@@ -345,4 +345,3 @@ func getEnvBool(key string, fallback bool) bool {
 	}
 	return fallback
 }
-

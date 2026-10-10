@@ -267,7 +267,7 @@ var Games = map[string]Game{
 				NestID:        1,
 				ImageResolver: minecraftJavaResolver,
 				Startup:       "java -Xms128M -Xmx{{SERVER_MEMORY}}M -jar {{SERVER_JARFILE}}",
-				TuningHook:  minecraftTuning,
+				TuningHook:    minecraftTuning,
 				Environment: map[string]string{
 					"SERVER_JARFILE": "server.jar",
 					"BUILD_TYPE":     "recommended",

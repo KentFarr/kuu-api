@@ -9,10 +9,10 @@ import (
 )
 
 const (
-	defaultReapInterval     = 24 * time.Hour
-	defaultReapGracePeriod  = 14 * 24 * time.Hour
-	reapInitialDelayJitter  = 5 * time.Minute
-	reapPerServerTimeout    = 30 * time.Second
+	defaultReapInterval    = 24 * time.Hour
+	defaultReapGracePeriod = 14 * 24 * time.Hour
+	reapInitialDelayJitter = 5 * time.Minute
+	reapPerServerTimeout   = 30 * time.Second
 )
 
 // Reaper hard-deletes servers whose subscription has been suspended longer

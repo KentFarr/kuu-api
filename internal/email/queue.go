@@ -6,9 +6,9 @@ import (
 	"math"
 	"time"
 
-	"github.com/jmoiron/sqlx"
 	"github.com/KentFarr/kuu-api/internal/database"
 	"github.com/KentFarr/kuu-api/internal/metrics"
+	"github.com/jmoiron/sqlx"
 )
 
 const (
@@ -120,7 +120,6 @@ func (q *Queue) attemptSend(tx *sqlx.Tx, e database.PendingEmail) {
 			e.ID, e.Attempts+1, nextAttempt.Format(time.RFC3339), err)
 	}
 }
-
 
 // backoffFor returns the delay before the Nth retry attempt. 1 → 1m,
 // 2 → 4m, 3 → 9m, 4 → 16m, 5 → 25m, capped at maxBackoff so a stuck row

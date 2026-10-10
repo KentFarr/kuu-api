@@ -11,27 +11,27 @@ import (
 )
 
 type Config struct {
-	Port                string
-	StripeSecretKey     string
-	StripeWebhookSecret string
-	PterodactylURL      string
-	PterodactylAPIKey   string
-	DatabaseURL         string
-	SMTPHost            string
-	SMTPPort            string
-	SMTPUsername        string
-	SMTPPassword        string
-	SMTPFrom            string
-	NodeIDs             []int
-	CheckoutSuccessURL  string
-	CheckoutCancelURL   string
-	CORSAllowedOrigin   string
-	TrustedProxyCIDRs   []*net.IPNet
-	AdminBearerToken    string
+	Port                     string
+	StripeSecretKey          string
+	StripeWebhookSecret      string
+	PterodactylURL           string
+	PterodactylAPIKey        string
+	DatabaseURL              string
+	SMTPHost                 string
+	SMTPPort                 string
+	SMTPUsername             string
+	SMTPPassword             string
+	SMTPFrom                 string
+	NodeIDs                  []int
+	CheckoutSuccessURL       string
+	CheckoutCancelURL        string
+	CORSAllowedOrigin        string
+	TrustedProxyCIDRs        []*net.IPNet
+	AdminBearerToken         string
 	StripeFirstMonthCouponID string
-	CloudflareAPIToken  string
-	CloudflareZoneID    string
-	CloudflareDomain    string
+	CloudflareAPIToken       string
+	CloudflareZoneID         string
+	CloudflareDomain         string
 }
 
 func Load() (*Config, error) {
@@ -52,27 +52,27 @@ func Load() (*Config, error) {
 	}
 
 	cfg := &Config{
-		Port:                getEnv("PORT", "8081"),
-		StripeSecretKey:     os.Getenv("STRIPE_SECRET_KEY"),
-		StripeWebhookSecret: os.Getenv("STRIPE_WEBHOOK_SECRET"),
-		PterodactylURL:      os.Getenv("PTERODACTYL_URL"),
-		PterodactylAPIKey:   os.Getenv("PTERODACTYL_API_KEY"),
-		DatabaseURL:         os.Getenv("DATABASE_URL"),
-		SMTPHost:            os.Getenv("SMTP_HOST"),
-		SMTPPort:            getEnv("SMTP_PORT", "587"),
-		SMTPUsername:        os.Getenv("SMTP_USERNAME"),
-		SMTPPassword:        os.Getenv("SMTP_PASSWORD"),
-		SMTPFrom:            getEnv("SMTP_FROM", "noreply@kuu.gg"),
-		NodeIDs:             nodeIDs,
-		CheckoutSuccessURL:  getEnv("CHECKOUT_SUCCESS_URL", "https://kuu.gg/success"),
-		CheckoutCancelURL:   getEnv("CHECKOUT_CANCEL_URL", "https://kuu.gg"),
-		CORSAllowedOrigin:   getEnv("CORS_ALLOWED_ORIGIN", "https://kuu.gg"),
-		TrustedProxyCIDRs:   trustedProxies,
-		AdminBearerToken:    os.Getenv("ADMIN_BEARER_TOKEN"),
+		Port:                     getEnv("PORT", "8081"),
+		StripeSecretKey:          os.Getenv("STRIPE_SECRET_KEY"),
+		StripeWebhookSecret:      os.Getenv("STRIPE_WEBHOOK_SECRET"),
+		PterodactylURL:           os.Getenv("PTERODACTYL_URL"),
+		PterodactylAPIKey:        os.Getenv("PTERODACTYL_API_KEY"),
+		DatabaseURL:              os.Getenv("DATABASE_URL"),
+		SMTPHost:                 os.Getenv("SMTP_HOST"),
+		SMTPPort:                 getEnv("SMTP_PORT", "587"),
+		SMTPUsername:             os.Getenv("SMTP_USERNAME"),
+		SMTPPassword:             os.Getenv("SMTP_PASSWORD"),
+		SMTPFrom:                 getEnv("SMTP_FROM", "noreply@kuu.gg"),
+		NodeIDs:                  nodeIDs,
+		CheckoutSuccessURL:       getEnv("CHECKOUT_SUCCESS_URL", "https://kuu.gg/success"),
+		CheckoutCancelURL:        getEnv("CHECKOUT_CANCEL_URL", "https://kuu.gg"),
+		CORSAllowedOrigin:        getEnv("CORS_ALLOWED_ORIGIN", "https://kuu.gg"),
+		TrustedProxyCIDRs:        trustedProxies,
+		AdminBearerToken:         os.Getenv("ADMIN_BEARER_TOKEN"),
 		StripeFirstMonthCouponID: os.Getenv("STRIPE_FIRST_MONTH_COUPON_ID"),
-		CloudflareAPIToken:  os.Getenv("CLOUDFLARE_API_TOKEN"),
-		CloudflareZoneID:    os.Getenv("CLOUDFLARE_ZONE_ID"),
-		CloudflareDomain:    getEnv("CLOUDFLARE_DOMAIN", "kuu.gg"),
+		CloudflareAPIToken:       os.Getenv("CLOUDFLARE_API_TOKEN"),
+		CloudflareZoneID:         os.Getenv("CLOUDFLARE_ZONE_ID"),
+		CloudflareDomain:         getEnv("CLOUDFLARE_DOMAIN", "kuu.gg"),
 	}
 
 	required := map[string]string{
