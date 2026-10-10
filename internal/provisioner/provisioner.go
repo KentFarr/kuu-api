@@ -28,21 +28,29 @@ var allocationRetryBackoff = []time.Duration{
 }
 
 type Provisioner struct {
-	PteroClient *pterodactyl.Client
-	DB          *database.DB
-	EmailQueue  *email.Queue
-	DNSClient   *dns.CloudflareClient
+	PteroClient PteroClient
+	DB          Store
+	EmailQueue  EmailQueue // nil when SMTP isn't configured
+	DNSClient   DNSClient  // nil when Cloudflare isn't configured
 	NodeIDs     []int
 }
 
 func New(pteroClient *pterodactyl.Client, db *database.DB, emailQueue *email.Queue, dnsClient *dns.CloudflareClient, nodeIDs []int) *Provisioner {
-	return &Provisioner{
+	p := &Provisioner{
 		PteroClient: pteroClient,
 		DB:          db,
-		EmailQueue:  emailQueue,
-		DNSClient:   dnsClient,
 		NodeIDs:     nodeIDs,
 	}
+	// Assign the optional dependencies only when they're set: a nil pointer
+	// stored in an interface is not == nil, which would defeat the nil
+	// checks that skip email and DNS.
+	if emailQueue != nil {
+		p.EmailQueue = emailQueue
+	}
+	if dnsClient != nil {
+		p.DNSClient = dnsClient
+	}
+	return p
 }
 
 // Request bundles every field ProvisionServer needs. Using a struct keeps

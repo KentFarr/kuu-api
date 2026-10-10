@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/KentFarr/kuu-api/internal/database"
 	"github.com/KentFarr/kuu-api/internal/email"
 	"github.com/KentFarr/kuu-api/internal/pterodactyl"
 )
@@ -19,10 +18,15 @@ const readinessTimeout = 5 * time.Second
 // stop routing traffic during a Pterodactyl/SMTP outage without restarting
 // the pod, which would just churn against the same outage.
 type HealthHandler struct {
-	DB      *database.DB
-	Ptero   *pterodactyl.Client
-	Mail    *email.Mailer
+	DB      pinger
+	Ptero   *pterodactyl.Client // concrete: the checks below handle nil
+	Mail    *email.Mailer       // concrete: nil when SMTP isn't configured
 	NodeIDs []int
+}
+
+// pinger is satisfied by *database.DB.
+type pinger interface {
+	Ping(ctx context.Context) error
 }
 
 // Live always returns 200 unless the process itself is wedged. The HTTP

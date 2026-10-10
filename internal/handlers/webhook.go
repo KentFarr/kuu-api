@@ -11,7 +11,6 @@ import (
 	"github.com/stripe/stripe-go/v82"
 	"github.com/stripe/stripe-go/v82/webhook"
 
-	"github.com/KentFarr/kuu-api/internal/database"
 	"github.com/KentFarr/kuu-api/internal/logging"
 	"github.com/KentFarr/kuu-api/internal/metrics"
 	"github.com/KentFarr/kuu-api/internal/provisioner"
@@ -19,10 +18,24 @@ import (
 
 const maxWebhookBodyBytes = 1 << 20
 
+// webhookProvisioner is the part of *provisioner.Provisioner the webhook
+// handler drives.
+type webhookProvisioner interface {
+	ProvisionServer(ctx context.Context, req provisioner.Request) (*provisioner.ProvisionResult, error)
+	SuspendServer(ctx context.Context, stripeSubID string) error
+}
+
+// webhookEventStore is the part of *database.DB that enforces webhook
+// idempotency.
+type webhookEventStore interface {
+	ClaimWebhookEvent(eventID string) (bool, error)
+	ReleaseWebhookEvent(eventID string) error
+}
+
 type WebhookHandler struct {
 	WebhookSecret string
-	Provisioner   *provisioner.Provisioner
-	DB            *database.DB
+	Provisioner   webhookProvisioner
+	DB            webhookEventStore
 }
 
 func (h *WebhookHandler) HandleWebhook(w http.ResponseWriter, r *http.Request) {
