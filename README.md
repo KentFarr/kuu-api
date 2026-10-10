@@ -247,7 +247,7 @@ TEST_DATABASE_URL='postgres://postgres:test@localhost:5433/postgres?sslmode=disa
 
 CI runs everything, including the database tests against a Postgres service container, on every pull request.
 
-Coverage (from CI): handlers 83.4%, provisioner 82.1%, database 59.8%.
+Coverage (from CI): handlers 84.8%, provisioner 82.9%, database 61.0%.
 
 ## Deploying
 
