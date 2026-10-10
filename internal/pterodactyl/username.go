@@ -67,7 +67,7 @@ func ValidateUsername(s string) error {
 		return ErrUsernameTooLong
 	}
 	first := s[0]
-	if !((first >= 'a' && first <= 'z') || (first >= 'A' && first <= 'Z')) {
+	if (first < 'a' || first > 'z') && (first < 'A' || first > 'Z') {
 		return ErrUsernameBadStart
 	}
 	last := s[len(s)-1]

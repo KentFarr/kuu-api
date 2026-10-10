@@ -138,8 +138,9 @@ func main() {
 	if exists, err := client.BucketExists(ctx, cfg.S3Bucket); err != nil {
 		log.Fatalf("bucket check failed: %v", err)
 	} else if !exists {
-		log.Fatalf("bucket %q does not exist or credentials lack access", cfg.S3Bucket)
+		log.Fatalf("bucket %q does not exist or credentials lack access", cfg.S3Bucket) //nolint:gosec // G706: bucket name is operator config, and %q escapes it
 	}
+	//nolint:gosec // G706: values are operator config read at startup, not request data
 	log.Printf("kuu-backup ready: bucket=%s endpoint=%s interval=%dh retention=%dd",
 		cfg.S3Bucket, endpointHost, cfg.IntervalHours, cfg.RetentionDays)
 
@@ -183,7 +184,7 @@ func runOnce(ctx context.Context, cfg *config, client *minio.Client) error {
 	defer os.Remove(tmpPath)
 
 	if err := dumpToFile(ctx, cfg.DatabaseURL, tmpFile); err != nil {
-		tmpFile.Close()
+		_ = tmpFile.Close() // the dump error is the one worth returning
 		return err
 	}
 	if err := tmpFile.Close(); err != nil {
@@ -195,7 +196,7 @@ func runOnce(ctx context.Context, cfg *config, client *minio.Client) error {
 		return fmt.Errorf("stat temp: %w", err)
 	}
 
-	uploadFile, err := os.Open(tmpPath)
+	uploadFile, err := os.Open(tmpPath) //nolint:gosec // G304: path comes from os.CreateTemp above
 	if err != nil {
 		return fmt.Errorf("open temp for upload: %w", err)
 	}
@@ -224,6 +225,7 @@ func runOnce(ctx context.Context, cfg *config, client *minio.Client) error {
 // crash mid-write leaves a partial file with the right extension that we
 // can still inspect. The temp file is the upload source.
 func dumpToFile(ctx context.Context, databaseURL string, dst *os.File) error {
+	//nolint:gosec // G204: fixed binary, no shell; the URL is operator config passed as one argument
 	dumpCmd := exec.CommandContext(ctx, "pg_dump", "--no-owner", "--no-acl", databaseURL)
 	gzipCmd := exec.CommandContext(ctx, "gzip", "-c")
 

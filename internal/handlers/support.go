@@ -55,8 +55,7 @@ func (h *SupportHandler) HandleResendWelcome(w http.ResponseWriter, r *http.Requ
 	// 🔒 Security: Don't reveal if email exists. Just return 200 OK.
 	if customer == nil || customer.PterodactylUserID == nil {
 		logger.Info("resend requested for unknown email or user")
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"message": "If an active subscription exists, a new welcome email has been sent."})
+		writeJSON(w, http.StatusOK, map[string]string{"message": "If an active subscription exists, a new welcome email has been sent."})
 		return
 	}
 
@@ -70,8 +69,7 @@ func (h *SupportHandler) HandleResendWelcome(w http.ResponseWriter, r *http.Requ
 
 	if server == nil {
 		logger.Info("resend requested but no active server found")
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"message": "If an active subscription exists, a new welcome email has been sent."})
+		writeJSON(w, http.StatusOK, map[string]string{"message": "If an active subscription exists, a new welcome email has been sent."})
 		return
 	}
 
@@ -114,8 +112,7 @@ func (h *SupportHandler) HandleResendWelcome(w http.ResponseWriter, r *http.Requ
 	}
 
 	logger.Info("welcome email resent successfully")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{"message": "If an active subscription exists, a new welcome email has been sent."})
+	writeJSON(w, http.StatusOK, map[string]string{"message": "If an active subscription exists, a new welcome email has been sent."})
 }
 
 func (h *SupportHandler) HandleManageSubscription(w http.ResponseWriter, r *http.Request) {
@@ -144,8 +141,7 @@ func (h *SupportHandler) HandleManageSubscription(w http.ResponseWriter, r *http
 	// 🔒 Security: Don't reveal if email exists. Just return 200 OK.
 	if customer == nil || customer.StripeCustomerID == nil {
 		logger.Info("manage requested for unknown email or non-stripe customer")
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"message": "If an active subscription exists, a management link has been sent to your email."})
+		writeJSON(w, http.StatusOK, map[string]string{"message": "If an active subscription exists, a management link has been sent to your email."})
 		return
 	}
 
@@ -170,6 +166,5 @@ func (h *SupportHandler) HandleManageSubscription(w http.ResponseWriter, r *http
 	}
 
 	logger.Info("manage subscription email enqueued successfully")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{"message": "If an active subscription exists, a management link has been sent to your email."})
+	writeJSON(w, http.StatusOK, map[string]string{"message": "If an active subscription exists, a management link has been sent to your email."})
 }

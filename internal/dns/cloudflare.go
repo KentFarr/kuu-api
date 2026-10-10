@@ -28,7 +28,7 @@ func NewCloudflareClient(token, zoneID, domain string) *CloudflareClient {
 	}
 }
 
-type DNSRecord struct {
+type Record struct {
 	ID      string `json:"id,omitempty"`
 	Type    string `json:"type"`
 	Name    string `json:"name"`
@@ -38,9 +38,9 @@ type DNSRecord struct {
 }
 
 type cloudflareResponse struct {
-	Success bool        `json:"success"`
-	Errors  []errorMsg  `json:"errors"`
-	Result  []DNSRecord `json:"result"`
+	Success bool       `json:"success"`
+	Errors  []errorMsg `json:"errors"`
+	Result  []Record   `json:"result"`
 }
 
 type errorMsg struct {
@@ -53,7 +53,7 @@ func (c *CloudflareClient) CreateCNAME(ctx context.Context, subdomain, target st
 		return fmt.Errorf("cloudflare dns: missing configuration (api token or zone id)")
 	}
 
-	record := DNSRecord{
+	record := Record{
 		Type:    "CNAME",
 		Name:    fmt.Sprintf("%s.%s", subdomain, c.Domain),
 		Content: target,

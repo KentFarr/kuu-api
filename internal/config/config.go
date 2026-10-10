@@ -39,7 +39,7 @@ func Load() (*Config, error) {
 	// we want in prod — env vars come from the orchestrator's secret store
 	// (k8s Secret, systemd EnvironmentFile, SSM, etc.) and no .env file is
 	// present on disk. See .env.example for the operational guidance.
-	godotenv.Load()
+	_ = godotenv.Load()
 
 	nodeIDs, err := parseNodeIDs(os.Getenv("NODE_IDS"), os.Getenv("NODE_ID"))
 	if err != nil {

@@ -177,8 +177,7 @@ func (h *CheckoutHandler) HandleCheckout(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(CheckoutResponse{
+	writeJSON(w, http.StatusOK, CheckoutResponse{
 		CheckoutURL: s.URL,
 	})
 }
