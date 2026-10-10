@@ -58,3 +58,42 @@ jobs:
       - uses: golangci/golangci-lint-action@v9
         with:
           version: v2.14.0
+
+  demo:
+    name: Demo smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Start the demo
+        run: make demo
+      - name: Pay twice with the same event
+        run: make demo-checkout ARGS="-repeat -email ci@example.com -username ci_player"
+      - name: Check one server was provisioned
+        run: |
+          servers=$(curl -fsS -H "Authorization: Bearer demo" http://localhost:8090/api/application/servers | jq '.data | length')
+          echo "servers on the fake panel: $servers"
+          test "$servers" -eq 1
+      - name: Check both emails arrived
+        run: |
+          # The panel's setup email is immediate; the welcome email waits
+          # for the queue worker's next poll (up to 30s).
+          for i in $(seq 1 45); do
+            subjects=$(curl -fsS http://localhost:8025/api/v1/messages | jq -r '.messages[].Subject')
+            if echo "$subjects" | grep -q "Account Created" && echo "$subjects" | grep -q "Your Kuu server is ready"; then
+              echo "$subjects"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "emails received:"; echo "$subjects"
+          exit 1
+      - name: Logs
+        if: always()
+        run: docker compose -f docker-compose.demo.yml logs --no-color kuu-api fakeptero
+      - name: Tear down
+        if: always()
+        run: make demo-down

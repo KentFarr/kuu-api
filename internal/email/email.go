@@ -194,7 +194,11 @@ func (m *Mailer) Send(to, subject, body string) error {
 	msg := fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n%s",
 		from, sanitizeHeader(to), sanitizeHeader(subject), body)
 
-	auth := smtp.PlainAuth("", m.Username, m.Password, m.Host)
+	// No username means an unauthenticated relay (e.g. the demo's Mailpit).
+	var auth smtp.Auth
+	if m.Username != "" {
+		auth = smtp.PlainAuth("", m.Username, m.Password, m.Host)
+	}
 	if err := smtp.SendMail(m.Host+":"+m.Port, auth, m.From, []string{to}, []byte(msg)); err != nil {
 		log.Printf("failed to send email to %s: %v", to, err)
 		return fmt.Errorf("failed to send email: %w", err)

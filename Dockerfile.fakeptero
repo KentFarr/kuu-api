@@ -1,0 +1,15 @@
+# Fake Pterodactyl panel for the local demo (docker-compose.demo.yml).
+# Not for production.
+FROM golang:1.26-alpine AS builder
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+ENV CGO_ENABLED=0 GOOS=linux
+RUN go build -trimpath -ldflags="-s -w" -o /out/fakeptero ./cmd/fakeptero
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=builder /out/fakeptero /usr/local/bin/fakeptero
+USER nonroot:nonroot
+EXPOSE 8090
+ENTRYPOINT ["/usr/local/bin/fakeptero"]

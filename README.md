@@ -124,6 +124,8 @@ cmd/
   server/         main.go for kuu-api
   migrate/        main.go for kuu-migrate
   backup/         main.go for kuu-backup (pg_dump + S3 upload daemon)
+  fakeptero/      in-memory fake Pterodactyl API for the local demo
+  demo-checkout/  sends a signed checkout.session.completed to the local demo
 internal/
   config/         env parsing + validation
   database/       lib/pq + sqlx wrapper, models, migrations runner glue, daily cleaner
@@ -146,32 +148,47 @@ docs/
 docker-compose.yml   production compose stack (postgres + api + caddy)
 Dockerfile           multi-stage; produces kuu-api + kuu-migrate on distroless
 Dockerfile.backup    postgres:16-alpine base for kuu-backup (needs pg_dump)
-Makefile             build, test, vet, fmt, lint, check
+Makefile             build, test, vet, fmt, lint, check, demo
+docker-compose.demo.yml + .env.demo + Dockerfile.fakeptero   the local demo (demo values only)
 ```
 
-## Running locally
+## Try it locally
 
-Requires Go 1.26+ and Docker. Provisioning also needs a Pterodactyl panel you can reach and Stripe test-mode keys.
+`make demo` runs the full payment → server flow on your machine with no Stripe, Pterodactyl, Cloudflare or SMTP account. It starts Postgres, [Mailpit](https://mailpit.axllent.org/) (catches email), `fakeptero` (an in-memory stand-in for the Pterodactyl API) and kuu-api in Docker. Requires Docker and Go.
 
 ```sh
-# Postgres
-docker run --rm -d --name kuu-pg -p 5432:5432 \
-  -e POSTGRES_USER=kuu -e POSTGRES_PASSWORD=kuu -e POSTGRES_DB=kuu postgres:16-alpine
+make demo            # build, migrate, start; waits until kuu-api answers
+make demo-checkout   # "pay": send kuu-api a signed checkout.session.completed
+make demo-down       # stop and delete everything
+```
 
+(If Docker needs root on your machine: `make demo DOCKER="sudo docker"`, and the same for `demo-down`.)
+
+What to look at:
+
+- **Logs** (`make demo-logs`): kuu-api claims the event, creates a panel user, picks the node, creates the server and queues the welcome email. fakeptero logs each API call it receives.
+- **Email** at <http://localhost:8025>: the panel's "Account Created" set-password email arrives at once, and kuu-api's "Your Kuu server is ready" email within 30 seconds (the queue worker's poll interval).
+- **Idempotency**: `make demo-checkout ARGS="-repeat"` delivers the same event twice. The second gets a 200 without provisioning anything (`event already processed, skipping` in the logs).
+- **Other options**: `ARGS="-game rust -plan 16GB -email you@example.com -username you"`.
+- **Metrics** at <http://localhost:8081/metrics> and the drift report at `/admin/reconciliation`, both with `Authorization: Bearer demo-admin-token`.
+
+`demo-checkout` signs events with the demo webhook secret from [.env.demo](.env.demo), exactly as Stripe signs them, so the real signature check runs. CI runs this same demo on every pull request.
+
+### Against real Stripe and Pterodactyl
+
+Requires a Pterodactyl panel, Stripe test-mode keys and test price IDs, and Postgres.
+
+```sh
 cp .env.example .env
-$EDITOR .env             # DATABASE_URL=postgres://kuu:kuu@localhost:5432/kuu?sslmode=disable,
-                         # Stripe test keys + price IDs, panel URL + key, NODE_IDS
-
-go run ./cmd/migrate up  # apply migrations
+$EDITOR .env             # DATABASE_URL, Stripe test keys + price IDs, panel URL + key, NODE_IDS
+go run ./cmd/migrate up
 go run ./cmd/server      # starts on :8081
-```
 
-In another terminal, forward Stripe test events to your local server:
-
-```sh
+# in another terminal: forward Stripe test events to the local server
 stripe listen --forward-to localhost:8081/api/webhook
-stripe trigger checkout.session.completed
 ```
+
+Then create a checkout with `POST /api/checkout` (see [docs/API.md](docs/API.md)) and pay on the returned page with Stripe's test card `4242 4242 4242 4242`. (`stripe trigger checkout.session.completed` won't work here: its generic session lacks the game and price metadata kuu-api provisions from.)
 
 SMTP and Cloudflare are optional: leave them empty and emails stay queued in Postgres, and subdomains are skipped.
 

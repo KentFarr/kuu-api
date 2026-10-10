@@ -513,12 +513,12 @@ $EDITOR .env   # paste STRIPE_WEBHOOK_SECRET=whsec_...
 docker compose up -d kuu-api   # picks up the new env
 ```
 
-Trigger a test event:
-
-```sh
-# from your laptop — install the Stripe CLI first
-stripe trigger checkout.session.completed
-```
+Run a test purchase in Stripe test mode: create a checkout with
+`POST /api/checkout` (see [API.md](API.md)) and pay on the returned page
+with the test card `4242 4242 4242 4242`. (`stripe trigger
+checkout.session.completed` isn't enough: its generic session has none of
+the game or price metadata kuu-api provisions from, so it fails with
+"unknown price ID".)
 
 On the VPS, watch the structured logs:
 
@@ -526,10 +526,11 @@ On the VPS, watch the structured logs:
 docker compose logs -f kuu-api
 ```
 
-A successful provision shows `provisioning started` →
-`pterodactyl user resolved` → `pterodactyl server created` →
-`provisioning succeeded`. The matching `request_id` runs through every
-line.
+A successful provision shows `processing webhook event` →
+`checkout completed` → `provisioning server` → `created pterodactyl
+user` (or `reusing existing pterodactyl user`) → `allocation attempt` →
+`created server` → `server provisioned`, then `email enqueued`. The
+matching `request_id` runs through every line.
 
 If you see `rolled back …` lines, follow the trail — the rollback
 chain unwinds in reverse order and tells you exactly which step failed.
