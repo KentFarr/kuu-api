@@ -23,6 +23,7 @@ type Reaper struct {
 	Provisioner *Provisioner
 	Interval    time.Duration
 	GracePeriod time.Duration
+	Now         func() time.Time // injectable clock for tests
 }
 
 func NewReaper(p *Provisioner) *Reaper {
@@ -30,6 +31,7 @@ func NewReaper(p *Provisioner) *Reaper {
 		Provisioner: p,
 		Interval:    defaultReapInterval,
 		GracePeriod: defaultReapGracePeriod,
+		Now:         time.Now,
 	}
 }
 
@@ -63,7 +65,7 @@ func (r *Reaper) runOnce(ctx context.Context) {
 		return
 	}
 
-	cutoff := time.Now().Add(-r.GracePeriod)
+	cutoff := r.Now().Add(-r.GracePeriod)
 	servers, err := r.Provisioner.DB.ListReapableServers(cutoff)
 	if err != nil {
 		log.Printf("server reaper: list failed: %v", err)
