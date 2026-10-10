@@ -16,6 +16,12 @@ linters:
       - path: _test\.go
         linters:
           - gosec
+      # fakeptero is a local demo stand-in for the panel; logging the
+      # request line is its whole purpose, and it never runs in production.
+      - path: cmd/fakeptero/
+        linters:
+          - gosec
+        text: G706
 
 formatters:
   enable:

@@ -1,0 +1,63 @@
+# Local demo: a payment turns into a provisioned server with no Stripe,
+# Pterodactyl, Cloudflare or SMTP accounts. Use the Makefile:
+#
+#   make demo            # build and start, wait for kuu-api
+#   make demo-checkout   # send a signed checkout.session.completed
+#   make demo-down       # stop and delete everything
+#
+# Everything uses demo values from .env.demo.
+
+name: kuu-demo
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: kuu
+      POSTGRES_PASSWORD: kuu-demo
+      POSTGRES_DB: kuu
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kuu -d kuu"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  # Catches outgoing email. Web UI: http://localhost:8025
+  mailpit:
+    image: axllent/mailpit:v1.31.2
+    ports:
+      - "127.0.0.1:8025:8025"
+
+  # In-memory stand-in for the Pterodactyl panel (cmd/fakeptero).
+  fakeptero:
+    build:
+      context: .
+      dockerfile: Dockerfile.fakeptero
+    environment:
+      SMTP_ADDR: mailpit:1025
+    ports:
+      - "127.0.0.1:8090:8090"
+    depends_on:
+      - mailpit
+
+  migrate:
+    build: .
+    entrypoint: ["/usr/local/bin/kuu-migrate"]
+    command: ["up"]
+    env_file: .env.demo
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  kuu-api:
+    build: .
+    env_file: .env.demo
+    ports:
+      - "127.0.0.1:8081:8081"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      fakeptero:
+        condition: service_started
+      mailpit:
+        condition: service_started
