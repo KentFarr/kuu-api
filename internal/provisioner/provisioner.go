@@ -72,7 +72,6 @@ type ProvisionResult struct {
 	UserID     int
 	Username   string
 	Email      string
-	Password   string
 	ServerID   int
 	ServerName string
 	Port       int
@@ -147,7 +146,6 @@ func (p *Provisioner) ProvisionServer(ctx context.Context, req Request) (result 
 	var (
 		pteroUserID           int
 		pteroUsername         string
-		password              string
 		newUser               bool
 		createdPteroUser      bool
 		createdCustomerID     int
@@ -159,13 +157,14 @@ func (p *Provisioner) ProvisionServer(ctx context.Context, req Request) (result 
 		pteroUsername = *customer.PterodactylUsername
 		logger.Info("reusing existing pterodactyl user", "ptero_user_id", pteroUserID, "username", pteroUsername)
 	} else {
-		user, pwd, source, err := p.PteroClient.CreateUser(ctx, req.CustomerEmail, req.RequestedUsername)
+		// Created without a password: Pterodactyl emails the customer a
+		// one-time link to set their own.
+		user, source, err := p.PteroClient.CreateUser(ctx, req.CustomerEmail, req.RequestedUsername)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create pterodactyl user: %w", err)
 		}
 		pteroUserID = user.ID
 		pteroUsername = user.Username
-		password = pwd
 		newUser = true
 		createdPteroUser = true
 		logger.Info("created pterodactyl user",
@@ -286,18 +285,20 @@ func (p *Provisioner) ProvisionServer(ctx context.Context, req Request) (result 
 	createdCustomerID = 0
 	createdSubscriptionID = 0
 
-	if p.EmailQueue != nil && newUser {
+	// Every provision gets a server-ready email. It holds no secrets, so
+	// returning customers get one for each new server too.
+	if p.EmailQueue != nil {
 		address := nodeAddress
 		if req.Subdomain != "" {
 			address = fmt.Sprintf("%s.kuu.gg", req.Subdomain)
 		}
 		subject, body := email.RenderWelcome(email.WelcomeData{
 			Username:    pteroUsername,
-			Password:    password,
 			ServerName:  serverName,
 			Game:        req.Game,
 			Port:        allocPort,
 			NodeAddress: address,
+			NewAccount:  newUser,
 		})
 		if err := p.EmailQueue.Enqueue(req.CustomerEmail, subject, body); err != nil {
 			logger.Warn("failed to enqueue welcome email", "err", err)
@@ -308,7 +309,6 @@ func (p *Provisioner) ProvisionServer(ctx context.Context, req Request) (result 
 		UserID:     pteroUserID,
 		Username:   pteroUsername,
 		Email:      req.CustomerEmail,
-		Password:   password,
 		ServerID:   server.ID,
 		ServerName: serverName,
 		Port:       allocPort,

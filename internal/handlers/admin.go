@@ -89,7 +89,6 @@ func (h *AdminHandler) testEmail(w http.ResponseWriter, r *http.Request) {
 	// Create dummy data
 	subject, body := email.RenderWelcome(email.WelcomeData{
 		Username:    "KuuTester",
-		Password:    "Test-Pass-123",
 		ServerName:  "Minecraft-Pro-123",
 		Game:        "Minecraft",
 		Port:        25565,

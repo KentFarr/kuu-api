@@ -37,20 +37,3 @@ func TestHashUsernameOnEmptyEmail(t *testing.T) {
 		t.Fatalf("unexpected username for empty email: %q", got)
 	}
 }
-
-func TestGeneratePasswordLengthAndUniqueness(t *testing.T) {
-	a, err := GeneratePassword()
-	if err != nil {
-		t.Fatalf("GeneratePassword failed: %v", err)
-	}
-	if len(a) != 32 {
-		t.Fatalf("expected 32-char hex password (16 bytes), got %d (%q)", len(a), a)
-	}
-	b, err := GeneratePassword()
-	if err != nil {
-		t.Fatalf("GeneratePassword failed: %v", err)
-	}
-	if a == b {
-		t.Fatalf("two random passwords should not collide: %q == %q", a, b)
-	}
-}
