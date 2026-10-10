@@ -32,6 +32,8 @@ type Config struct {
 	CloudflareAPIToken       string
 	CloudflareZoneID         string
 	CloudflareDomain         string
+	APIPublicURL             string
+	PortalLinkSecret         string
 }
 
 func Load() (*Config, error) {
@@ -73,6 +75,8 @@ func Load() (*Config, error) {
 		CloudflareAPIToken:       os.Getenv("CLOUDFLARE_API_TOKEN"),
 		CloudflareZoneID:         os.Getenv("CLOUDFLARE_ZONE_ID"),
 		CloudflareDomain:         getEnv("CLOUDFLARE_DOMAIN", "kuu.gg"),
+		APIPublicURL:             strings.TrimRight(getEnv("API_PUBLIC_URL", "https://api.kuu.gg"), "/"),
+		PortalLinkSecret:         os.Getenv("PORTAL_LINK_SECRET"),
 	}
 
 	required := map[string]string{

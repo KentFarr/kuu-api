@@ -73,14 +73,16 @@ What runs in the box:
 
 **No passwords in email.** kuu-api used to generate the panel password and send it in the welcome email, which meant it sat in plaintext in `pending_emails` and in the customer's inbox. Now the panel account is created without a password, and Pterodactyl's own flow emails the customer a 60-minute "Setup Your Account" link; its "Forgot password" page covers expired links and later resets. kuu-api never sees a password, so the welcome email only carries server details, and returning customers get one for each new server too. The cost is a second email with panel branding, and if provisioning rolls back after the account was created, the customer may receive a setup link for an account that no longer exists (the retry sends a working one).
 
-**Grace period for failed payments.** Stripe retries a failed renewal for days (Smart Retries), and most declines are temporary, so `invoice.payment_failed` only marks the subscription `past_due` and emails the customer a link to Stripe's hosted invoice page, where they can pay with another card. That link stays valid for weeks; a billing-portal session link would expire long before the customer opened the email. The server is suspended only when Stripe gives up (`customer.subscription.updated` with status `unpaid` or `canceled`) or the subscription is deleted. Each suspension records a reason, so `invoice.paid` restores a server suspended for non-payment but never one the customer cancelled. A second suspension keeps the original timestamp, so it can't extend the 14-day grace period.
+**Grace period for failed payments.** Stripe retries a failed renewal for days (Smart Retries), and most declines are temporary, so `invoice.payment_failed` only marks the subscription `past_due` and emails the customer a link to Stripe's hosted invoice page, where they can pay with another card. That link stays valid for weeks; a billing-portal session link would expire long before the customer opened the email. The server is suspended only when Stripe gives up (`customer.subscription.updated` with status `unpaid` or `canceled`) or the subscription is deleted. Each suspension records a reason, so `invoice.paid` restores a server suspended for non-payment but never one the customer cancelled. A second suspension keeps the original timestamp, so it can't extend the 14-day grace period. Stripe doesn't guarantee event order, so for every billing event the handler fetches the subscription's current status from Stripe and acts on that rather than on the event's snapshot; a delayed `unpaid` arriving after `invoice.paid` can't re-suspend a paid-up server.
+
+**Signed links instead of expiring ones.** Stripe billing-portal sessions are short-lived, so emailing one would often give the customer a dead link. `/api/support/manage` instead emails a link back to kuu-api carrying the Stripe customer ID and an expiry, signed with HMAC-SHA256 and valid for 24 hours. Clicking it creates a fresh portal session and redirects. The link is built from the configured `API_PUBLIC_URL`, never the request's `Host` header, so nobody can get a phishing link sent from Kuu's address.
 
 **Suspend, then reap.** A cancellation or exhausted payment retries suspend the server instead of deleting it. That gives a customer who cancelled by mistake, or whose card failed, two weeks to resubscribe with their world intact, or to ask support for their files (a suspended server is locked in the panel). Fourteen days is mid-range for game hosts (7–30 days is typical) and keeps node disks from filling with abandoned servers. After 14 days a daily reaper deletes the server from Pterodactyl, its DNS record and its database row. Customer and subscription rows and the panel account are kept, so billing history survives and a returning customer keeps their login.
 
 **Trade-offs and what I'd change.**
 
 - *Provisioning runs inside the webhook request.* It's simple and the result is visible in one log trace, but a slow panel makes Stripe wait. Stripe's retries plus the idempotency claim keep it correct. At larger scale I'd acknowledge the webhook immediately and provision from a job queue.
-- *Webhook events can arrive out of order.* Stripe doesn't guarantee ordering, and the handler acts on the state inside each event. A delayed `unpaid` arriving after `invoice.paid` would re-suspend a paid-up server. Re-fetching the subscription from Stripe before acting would close that gap at the cost of an API call per event.
+- *One Stripe API call per billing event.* Fetching the live subscription status protects against reordered events, but every `invoice.paid` (including each normal monthly renewal) costs a Stripe request, and a Stripe outage makes those events fail and retry.
 - *Configuration is code.* Games, variants and plans live in `internal/plans/plans.go`. That keeps the catalog type-checked and reviewed, but every new game needs a deploy.
 
 ## Games and variants
@@ -180,7 +182,8 @@ SMTP and Cloudflare are optional: leave them empty and emails stay queued in Pos
 | POST   | `/api/checkout`                  | rate-limited  | Creates a Stripe Checkout Session |
 | POST   | `/api/webhook`                   | Stripe sig    | Receives Stripe events (idempotent) |
 | POST   | `/api/support/resend-welcome`    | rate-limited  | Re-sends the server details, with a link to the panel's password reset |
-| POST   | `/api/support/manage`            | rate-limited  | Emails a Stripe billing-portal link |
+| POST   | `/api/support/manage`            | rate-limited  | Emails a signed, 24-hour link to the Stripe billing portal |
+| GET    | `/api/support/portal`            | signed link   | Checks the emailed link and redirects to a fresh portal session |
 | GET    | `/livez`                         | open          | Liveness — always 200 if process is up |
 | GET    | `/readyz`                        | open          | Readiness — pings DB, panel, SMTP |
 | GET    | `/health`                        | open          | Alias for `/livez` |
@@ -219,6 +222,11 @@ Recommended for production:
   `/metrics`.
 - `CORS_ALLOWED_ORIGIN` — your frontend's origin. Defaults to
   `https://kuu.gg`.
+- `API_PUBLIC_URL` — this API's public URL, used in emailed links.
+  Defaults to `https://api.kuu.gg`.
+- `PORTAL_LINK_SECRET` — `openssl rand -hex 32`. Signs the emailed
+  billing links; if unset, a random key is used and links break on
+  restart.
 
 ## Testing
 
@@ -239,7 +247,7 @@ TEST_DATABASE_URL='postgres://postgres:test@localhost:5433/postgres?sslmode=disa
 
 CI runs everything, including the database tests against a Postgres service container, on every pull request.
 
-Coverage (from CI): handlers 83.4%, provisioner 82.1%, database 59.8%.
+Coverage (from CI): handlers 84.8%, provisioner 82.9%, database 61.0%.
 
 ## Deploying
 

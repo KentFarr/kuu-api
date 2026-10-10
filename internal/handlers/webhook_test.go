@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/stripe/stripe-go/v82"
 	"github.com/stripe/stripe-go/v82/webhook"
 
 	"github.com/KentFarr/kuu-api/internal/provisioner"
@@ -435,5 +436,106 @@ func TestWebhookPassesCheckoutFieldsToProvisioner(t *testing.T) {
 	}
 	if len(prov.provisioned) != 1 || prov.provisioned[0] != want {
 		t.Errorf("provision request = %+v, want %+v", prov.provisioned, want)
+	}
+}
+
+// fakeStatuses is a subscriptionStatusSource with fixed answers.
+type fakeStatuses struct {
+	status map[string]stripe.SubscriptionStatus
+	err    error
+}
+
+func (f fakeStatuses) Status(_ context.Context, id string) (stripe.SubscriptionStatus, error) {
+	return f.status[id], f.err
+}
+
+// With a live status source, the handler acts on Stripe's current state,
+// not the (possibly stale or reordered) event payload.
+func TestWebhookActsOnLiveSubscriptionStatus(t *testing.T) {
+	cases := []struct {
+		name      string
+		live      stripe.SubscriptionStatus
+		body      func(t *testing.T) []byte
+		wantCalls []string
+	}{
+		{
+			name: "stale unpaid after recovery restores instead of suspending",
+			live: stripe.SubscriptionStatusActive,
+			body: func(t *testing.T) []byte {
+				return subscriptionEvent(t, "evt_old", "customer.subscription.updated", "sub_1", "unpaid")
+			},
+			wantCalls: []string{"restore sub_1"},
+		},
+		{
+			name: "delayed payment failure after recovery sends no failure email",
+			live: stripe.SubscriptionStatusActive,
+			body: func(t *testing.T) []byte {
+				return invoiceEvent(t, "evt_pf_late", "invoice.payment_failed", "sub_1", nil)
+			},
+			wantCalls: []string{"restore sub_1"},
+		},
+		{
+			name: "payment failure while retrying is recorded",
+			live: stripe.SubscriptionStatusPastDue,
+			body: func(t *testing.T) []byte {
+				return invoiceEvent(t, "evt_pf_live", "invoice.payment_failed", "sub_1", nil)
+			},
+			wantCalls: []string{"payment_failed sub_1"},
+		},
+		{
+			name: "late payment failure after retries ended suspends",
+			live: stripe.SubscriptionStatusUnpaid,
+			body: func(t *testing.T) []byte {
+				return invoiceEvent(t, "evt_pf_end", "invoice.payment_failed", "sub_1", nil)
+			},
+			wantCalls: []string{"suspend sub_1 non_payment"},
+		},
+		{
+			name: "invoice paid for a subscription that was since canceled suspends",
+			live: stripe.SubscriptionStatusCanceled,
+			body: func(t *testing.T) []byte {
+				return invoiceEvent(t, "evt_paid_old", "invoice.paid", "sub_1", nil)
+			},
+			wantCalls: []string{"suspend sub_1 cancelled"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, prov, _ := newTestWebhookHandler()
+			h.Subscriptions = fakeStatuses{status: map[string]stripe.SubscriptionStatus{"sub_1": tc.live}}
+
+			if rec := serve(h, signedRequest(tc.body(t), testWebhookSecret)); rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", rec.Code)
+			}
+			if strings.Join(prov.calls, ", ") != strings.Join(tc.wantCalls, ", ") {
+				t.Errorf("calls = %v, want %v", prov.calls, tc.wantCalls)
+			}
+		})
+	}
+}
+
+func TestWebhookStatusLookupFailureRetries(t *testing.T) {
+	h, prov, store := newTestWebhookHandler()
+	h.Subscriptions = fakeStatuses{err: errors.New("stripe down")}
+
+	rec := serve(h, signedRequest(invoiceEvent(t, "evt_lookup", "invoice.paid", "sub_1", nil), testWebhookSecret))
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", rec.Code)
+	}
+	if store.claimed["evt_lookup"] || len(prov.calls) != 0 {
+		t.Errorf("claimed=%v calls=%v; want released and no action", store.claimed["evt_lookup"], prov.calls)
+	}
+}
+
+func TestStripeSubscriptionsFetchesLiveStatus(t *testing.T) {
+	stripeAPI := newFakeStripe(t, stripeReplies(http.StatusOK, `{"id": "sub_1", "object": "subscription", "status": "unpaid"}`))
+
+	status, err := StripeSubscriptions{}.Status(context.Background(), "sub_1")
+	if err != nil || status != stripe.SubscriptionStatusUnpaid {
+		t.Fatalf("Status = %q, %v; want unpaid", status, err)
+	}
+	if got := stripeAPI.calls[0].Path; got != "/v1/subscriptions/sub_1" {
+		t.Errorf("path = %s, want /v1/subscriptions/sub_1", got)
 	}
 }

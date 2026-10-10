@@ -39,6 +39,9 @@ type WebhookHandler struct {
 	WebhookSecret string
 	Provisioner   webhookProvisioner
 	DB            webhookEventStore
+	// Subscriptions supplies live subscription status from Stripe. When
+	// nil, handlers trust the status carried in the event.
+	Subscriptions subscriptionStatusSource
 }
 
 func (h *WebhookHandler) HandleWebhook(w http.ResponseWriter, r *http.Request) {
@@ -202,35 +205,52 @@ func (h *WebhookHandler) handleSubscriptionCancelled(ctx context.Context, event 
 	return h.Provisioner.SuspendServer(ctx, sub.ID, database.SuspendReasonCancelled)
 }
 
-// handleSubscriptionUpdated reacts to Stripe finishing its retries. What
-// happens then is a Stripe dashboard setting (Billing → Revenue recovery):
-// "mark unpaid" sends status unpaid here; "cancel" sends status canceled
-// here and also customer.subscription.deleted. Either way we suspend. If
-// the setting is "leave past due", nothing ever suspends. A return to
-// active restores a server we suspended for non-payment.
-func (h *WebhookHandler) handleSubscriptionUpdated(ctx context.Context, event stripe.Event) error {
-	logger := logging.FromContext(ctx)
-
-	var sub stripe.Subscription
-	if err := json.Unmarshal(event.Data.Raw, &sub); err != nil {
-		return fmt.Errorf("failed to unmarshal subscription: %w", err)
+// currentStatus returns the subscription's live status from Stripe, so a
+// delayed or redelivered event can't act on stale state (Stripe doesn't
+// guarantee event order: an old "unpaid" could otherwise arrive after
+// "invoice.paid" and re-suspend a paid-up server). Without a status source
+// (tests), it trusts the event's own value.
+func (h *WebhookHandler) currentStatus(ctx context.Context, stripeSubID string, fromEvent stripe.SubscriptionStatus) (stripe.SubscriptionStatus, error) {
+	if h.Subscriptions == nil {
+		return fromEvent, nil
 	}
-	logger = logger.With("stripe_subscription_id", sub.ID, "status", string(sub.Status))
+	return h.Subscriptions.Status(ctx, stripeSubID)
+}
 
-	switch sub.Status {
+// applySubscriptionStatus brings our records in line with Stripe's status.
+// Stripe's retries end according to a dashboard setting (Billing → Revenue
+// recovery): "mark unpaid" leaves the subscription unpaid, "cancel" cancels
+// it. Either way we suspend. If the setting is "leave past due", nothing
+// ever suspends. Active restores a server we suspended for non-payment.
+func (h *WebhookHandler) applySubscriptionStatus(ctx context.Context, stripeSubID string, status stripe.SubscriptionStatus) error {
+	logger := logging.FromContext(ctx).With("stripe_subscription_id", stripeSubID, "status", string(status))
+
+	switch status {
 	case stripe.SubscriptionStatusUnpaid:
 		logger.Warn("payment retries exhausted; suspending")
-		return h.Provisioner.SuspendServer(ctx, sub.ID, database.SuspendReasonNonPayment)
-	case stripe.SubscriptionStatusCanceled:
+		return h.Provisioner.SuspendServer(ctx, stripeSubID, database.SuspendReasonNonPayment)
+	case stripe.SubscriptionStatusCanceled, stripe.SubscriptionStatusIncompleteExpired:
 		logger.Info("subscription canceled; suspending")
-		return h.Provisioner.SuspendServer(ctx, sub.ID, database.SuspendReasonCancelled)
+		return h.Provisioner.SuspendServer(ctx, stripeSubID, database.SuspendReasonCancelled)
 	case stripe.SubscriptionStatusActive:
-		return h.Provisioner.RestoreAfterPayment(ctx, sub.ID)
+		return h.Provisioner.RestoreAfterPayment(ctx, stripeSubID)
 	default:
 		// past_due is handled by invoice.payment_failed; other statuses
 		// (trialing, incomplete, paused) don't affect the server.
 		return nil
 	}
+}
+
+func (h *WebhookHandler) handleSubscriptionUpdated(ctx context.Context, event stripe.Event) error {
+	var sub stripe.Subscription
+	if err := json.Unmarshal(event.Data.Raw, &sub); err != nil {
+		return fmt.Errorf("failed to unmarshal subscription: %w", err)
+	}
+	status, err := h.currentStatus(ctx, sub.ID, sub.Status)
+	if err != nil {
+		return err
+	}
+	return h.applySubscriptionStatus(ctx, sub.ID, status)
 }
 
 // invoiceSubscriptionID returns the subscription an invoice belongs to, or
@@ -243,7 +263,7 @@ func invoiceSubscriptionID(invoice *stripe.Invoice) string {
 }
 
 // handlePaymentFailed records the failure and emails the customer, but
-// doesn't suspend: Stripe retries the charge for days. See
+// doesn't suspend while Stripe is still retrying. See
 // provisioner.RecordPaymentFailure.
 func (h *WebhookHandler) handlePaymentFailed(ctx context.Context, event stripe.Event) error {
 	logger := logging.FromContext(ctx)
@@ -269,6 +289,16 @@ func (h *WebhookHandler) handlePaymentFailed(ctx context.Context, event stripe.E
 	if subID == "" {
 		return nil
 	}
+
+	status, err := h.currentStatus(ctx, subID, stripe.SubscriptionStatusPastDue)
+	if err != nil {
+		return err
+	}
+	if status != stripe.SubscriptionStatusPastDue {
+		// Already recovered (a retry succeeded) or past the retries; act on
+		// where the subscription is now, without a "payment failed" email.
+		return h.applySubscriptionStatus(ctx, subID, status)
+	}
 	return h.Provisioner.RecordPaymentFailure(ctx, provisioner.PaymentFailure{
 		StripeSubID:   subID,
 		CustomerEmail: invoice.CustomerEmail,
@@ -288,5 +318,9 @@ func (h *WebhookHandler) handleInvoicePaid(ctx context.Context, event stripe.Eve
 	if subID == "" {
 		return nil
 	}
-	return h.Provisioner.RestoreAfterPayment(ctx, subID)
+	status, err := h.currentStatus(ctx, subID, stripe.SubscriptionStatusActive)
+	if err != nil {
+		return err
+	}
+	return h.applySubscriptionStatus(ctx, subID, status)
 }
