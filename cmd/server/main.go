@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/subtle"
 	"errors"
 	"fmt"
@@ -109,6 +110,7 @@ func main() {
 		WebhookSecret: cfg.StripeWebhookSecret,
 		Provisioner:   prov,
 		DB:            db,
+		Subscriptions: handlers.StripeSubscriptions{},
 	}
 
 	health := &handlers.HealthHandler{DB: db, Ptero: pteroClient, Mail: mailer, NodeIDs: cfg.NodeIDs}
@@ -123,11 +125,22 @@ func main() {
 		NodeIDs: cfg.NodeIDs,
 	}
 
+	portalLinkSecret := []byte(cfg.PortalLinkSecret)
+	if len(portalLinkSecret) == 0 {
+		portalLinkSecret = make([]byte, 32)
+		if _, err := rand.Read(portalLinkSecret); err != nil {
+			log.Fatalf("failed to generate portal link secret: %v", err)
+		}
+		log.Println("PORTAL_LINK_SECRET unset; using a random key, so emailed billing links stop working after a restart")
+	}
+
 	support := &handlers.SupportHandler{
 		DB:          db,
 		PteroClient: pteroClient,
 		EmailQueue:  emailQueue,
 		ReturnURL:   cfg.CORSAllowedOrigin,
+		PublicURL:   cfg.APIPublicURL,
+		LinkSecret:  portalLinkSecret,
 	}
 
 	mux := http.NewServeMux()
@@ -137,6 +150,7 @@ func main() {
 	mux.Handle("POST /api/checkout", checkoutLimiter.Middleware(http.HandlerFunc(checkout.HandleCheckout)))
 	mux.Handle("POST /api/support/resend-welcome", checkoutLimiter.Middleware(http.HandlerFunc(support.HandleResendWelcome)))
 	mux.Handle("POST /api/support/manage", checkoutLimiter.Middleware(http.HandlerFunc(support.HandleManageSubscription)))
+	mux.Handle("GET /api/support/portal", checkoutLimiter.Middleware(http.HandlerFunc(support.HandlePortalRedirect)))
 	mux.HandleFunc("POST /api/webhook", wh.HandleWebhook)
 	mux.Handle("GET /metrics", metricsHandler(cfg.AdminBearerToken))
 	admin.Routes(mux)

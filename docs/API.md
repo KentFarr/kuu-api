@@ -445,8 +445,11 @@ Don't try to build features that depend on these — they don't exist:
 - **No "list my servers" endpoint for end users.** They see their
   servers by logging into `panel.kuu.gg` directly.
 - **No "cancel my subscription" endpoint.** Cancellation goes through
-  Stripe's customer portal (which you'd configure on the Stripe side
-  and link from the success/account pages).
+  Stripe's customer portal (configure it on the Stripe side). The
+  frontend can offer a "manage subscription" form that posts the
+  customer's email to `POST /api/support/manage`; they receive a
+  signed link, valid for 24 hours, that opens the portal via
+  `GET /api/support/portal`.
 - **No password reset or username change flow on the API.**
   kuu-api never sets or sees customer passwords. Customers set and
   reset them through the Pterodactyl panel (`panel.kuu.gg/auth/password`).

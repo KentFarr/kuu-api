@@ -127,7 +127,7 @@ You requested a link to manage your Kuu subscription. You can use the link below
 
 %s
 
-This link is private and should not be shared with anyone else.
+This link is private and should not be shared with anyone else. It works for 24 hours; after that, request a new one from kuu.gg.
 
 Need help?
 Join our Discord for 24/7 support: https://discord.gg/b76772cCvs

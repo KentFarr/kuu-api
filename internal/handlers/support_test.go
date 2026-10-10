@@ -5,8 +5,12 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/KentFarr/kuu-api/internal/database"
 	"github.com/KentFarr/kuu-api/internal/email"
@@ -156,22 +160,127 @@ func TestResendWelcomeErrors(t *testing.T) {
 	}
 }
 
-func TestManageSubscriptionEmailsPortalLink(t *testing.T) {
+var testLinkSecret = []byte("test-link-secret")
+
+func newPortalHandler(queue *fakeEnqueuer, now time.Time) *SupportHandler {
+	return &SupportHandler{
+		DB:         &fakeSupportStore{customer: existingCustomer()},
+		EmailQueue: queue,
+		ReturnURL:  "https://kuu.test",
+		PublicURL:  "https://api.kuu.test",
+		LinkSecret: testLinkSecret,
+		Now:        func() time.Time { return now },
+	}
+}
+
+// emailedPortalLink requests a manage-subscription email and returns the
+// link inside it.
+func emailedPortalLink(t *testing.T, h *SupportHandler, queue *fakeEnqueuer) *url.URL {
+	t.Helper()
+	if rec := supportPost(h.HandleManageSubscription, `{"email":"alice@example.com"}`); rec.Code != http.StatusOK {
+		t.Fatalf("manage: status = %d, want 200", rec.Code)
+	}
+	if len(queue.sent) != 1 {
+		t.Fatalf("emails = %d, want 1", len(queue.sent))
+	}
+	raw := regexp.MustCompile(`https://\S+`).FindString(queue.sent[0].Body)
+	u, err := url.Parse(raw)
+	if err != nil || raw == "" {
+		t.Fatalf("no link in email body:\n%s", queue.sent[0].Body)
+	}
+	return u
+}
+
+func portalGet(h *SupportHandler, target string) *httptest.ResponseRecorder {
+	rec := httptest.NewRecorder()
+	h.HandlePortalRedirect(rec, httptest.NewRequest(http.MethodGet, target, nil))
+	return rec
+}
+
+func TestManageSubscriptionEmailsSignedLinkThatOpensPortal(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	queue := &fakeEnqueuer{}
+	h := newPortalHandler(queue, now)
+
+	link := emailedPortalLink(t, h, queue)
+	if link.Host != "api.kuu.test" || link.Path != "/api/support/portal" {
+		t.Fatalf("link = %s, want the configured public URL", link)
+	}
+
+	// Clicking it an hour later creates a fresh portal session.
 	stripeAPI := newFakeStripe(t, stripeReplies(http.StatusOK,
 		`{"id": "bps_1", "object": "billing_portal.session", "url": "https://billing.stripe.test/p/1"}`))
-	queue := &fakeEnqueuer{}
-	h := &SupportHandler{DB: &fakeSupportStore{customer: existingCustomer()}, EmailQueue: queue, ReturnURL: "https://kuu.test"}
+	h.Now = func() time.Time { return now.Add(time.Hour) }
+	rec := portalGet(h, link.RequestURI())
 
-	rec := supportPost(h.HandleManageSubscription, `{"email":"alice@example.com"}`)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "https://billing.stripe.test/p/1" {
+		t.Fatalf("redirect = %d %q, want 303 to the portal session", rec.Code, rec.Header().Get("Location"))
 	}
 	if form := stripeAPI.calls[0].Form; form.Get("customer") != "cus_1" || form.Get("return_url") != "https://kuu.test" {
 		t.Errorf("portal session params = %v", form)
 	}
-	if len(queue.sent) != 1 || !strings.Contains(queue.sent[0].Body, "https://billing.stripe.test/p/1") {
-		t.Errorf("emails = %+v, want one containing the portal link", queue.sent)
+}
+
+func TestManageSubscriptionIgnoresHostHeader(t *testing.T) {
+	queue := &fakeEnqueuer{}
+	h := newPortalHandler(queue, time.Now())
+	req := httptest.NewRequest(http.MethodPost, "/api/support/manage", strings.NewReader(`{"email":"alice@example.com"}`))
+	req.Host = "evil.example"
+	h.HandleManageSubscription(httptest.NewRecorder(), req)
+
+	if len(queue.sent) != 1 || strings.Contains(queue.sent[0].Body, "evil.example") {
+		t.Errorf("emailed link must use the configured URL, not the Host header:\n%+v", queue.sent)
+	}
+}
+
+func TestPortalRedirectRejectsBadLinks(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	queue := &fakeEnqueuer{}
+	h := newPortalHandler(queue, now)
+	link := emailedPortalLink(t, h, queue)
+	stripeAPI := newFakeStripe(t, stripeReplies(http.StatusOK, `{"id": "bps_1", "url": "https://x"}`))
+
+	tampered := link.Query()
+	tampered.Set("c", "cus_someone_else")
+	extended := link.Query()
+	extended.Set("e", strconv.FormatInt(now.Add(365*24*time.Hour).Unix(), 10))
+	otherKey := link.Query()
+	otherKey.Set("s", signPortalLink([]byte("wrong"), "cus_1", now.Add(portalLinkTTL)))
+
+	cases := []struct {
+		name   string
+		target string
+		at     time.Time
+		want   int
+	}{
+		{"no parameters", "/api/support/portal", now, http.StatusForbidden},
+		{"different customer", "/api/support/portal?" + tampered.Encode(), now, http.StatusForbidden},
+		{"extended expiry", "/api/support/portal?" + extended.Encode(), now, http.StatusForbidden},
+		{"signed with another key", "/api/support/portal?" + otherKey.Encode(), now, http.StatusForbidden},
+		{"expired", link.RequestURI(), now.Add(portalLinkTTL + time.Minute), http.StatusGone},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h.Now = func() time.Time { return tc.at }
+			if rec := portalGet(h, tc.target); rec.Code != tc.want {
+				t.Errorf("status = %d, want %d", rec.Code, tc.want)
+			}
+		})
+	}
+	if len(stripeAPI.calls) != 0 {
+		t.Errorf("rejected links reached Stripe %d times", len(stripeAPI.calls))
+	}
+}
+
+func TestPortalRedirectStripeErrorReturns502(t *testing.T) {
+	now := time.Now()
+	queue := &fakeEnqueuer{}
+	h := newPortalHandler(queue, now)
+	link := emailedPortalLink(t, h, queue)
+	newFakeStripe(t, stripeReplies(http.StatusInternalServerError, stripeErrorBody))
+
+	if rec := portalGet(h, link.RequestURI()); rec.Code != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502", rec.Code)
 	}
 }
 
@@ -192,16 +301,8 @@ func TestManageSubscriptionErrors(t *testing.T) {
 			t.Errorf("status = %d, want 500", rec.Code)
 		}
 	})
-	t.Run("stripe fails", func(t *testing.T) {
-		newFakeStripe(t, stripeReplies(http.StatusInternalServerError, stripeErrorBody))
-		h := &SupportHandler{DB: &fakeSupportStore{customer: existingCustomer()}, EmailQueue: &fakeEnqueuer{}}
-		if rec := supportPost(h.HandleManageSubscription, `{"email":"a@b.c"}`); rec.Code != http.StatusInternalServerError {
-			t.Errorf("status = %d, want 500", rec.Code)
-		}
-	})
 	t.Run("enqueue fails", func(t *testing.T) {
-		newFakeStripe(t, stripeReplies(http.StatusOK, `{"id": "bps_1", "url": "https://x"}`))
-		h := &SupportHandler{DB: &fakeSupportStore{customer: existingCustomer()}, EmailQueue: &fakeEnqueuer{err: errors.New("db")}}
+		h := newPortalHandler(&fakeEnqueuer{err: errors.New("db")}, time.Now())
 		if rec := supportPost(h.HandleManageSubscription, `{"email":"a@b.c"}`); rec.Code != http.StatusInternalServerError {
 			t.Errorf("status = %d, want 500", rec.Code)
 		}

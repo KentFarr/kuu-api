@@ -5,9 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
-
-	"github.com/stripe/stripe-go/v82"
-	"github.com/stripe/stripe-go/v82/billingportal/session"
+	"time"
 
 	"github.com/KentFarr/kuu-api/internal/database"
 	"github.com/KentFarr/kuu-api/internal/email"
@@ -34,7 +32,11 @@ type SupportHandler struct {
 	DB          supportStore
 	PteroClient supportPtero
 	EmailQueue  emailEnqueuer
-	ReturnURL   string
+	ReturnURL   string // where the billing portal sends customers back to
+
+	PublicURL  string           // this API's public base URL, for emailed links
+	LinkSecret []byte           // HMAC key for portal links
+	Now        func() time.Time // clock for link expiry; nil means time.Now
 }
 
 type ResendWelcomeRequest struct {
@@ -146,20 +148,9 @@ func (h *SupportHandler) HandleManageSubscription(w http.ResponseWriter, r *http
 		return
 	}
 
-	// 2. Create Stripe Billing Portal Session
-	params := &stripe.BillingPortalSessionParams{
-		Customer:  stripe.String(*customer.StripeCustomerID),
-		ReturnURL: stripe.String(h.ReturnURL),
-	}
-	ps, err := session.New(params)
-	if err != nil {
-		logger.Error("failed to create billing portal session", "err", err)
-		http.Error(w, "failed to create billing portal session", http.StatusInternalServerError)
-		return
-	}
-
-	// 3. Enqueue Email
-	subject, body := email.RenderManageSubscription(ps.URL)
+	// 2. Email a signed link; the portal session is created when it's
+	// clicked (see HandlePortalRedirect).
+	subject, body := email.RenderManageSubscription(h.portalLinkURL(*customer.StripeCustomerID))
 	if err := h.EmailQueue.Enqueue(req.Email, subject, body); err != nil {
 		logger.Error("failed to enqueue manage subscription email", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
