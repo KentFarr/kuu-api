@@ -1,2 +1,9 @@
 .env
-kuu-api
+/kuu-api
+/server
+/backup
+/bin/
+*.test
+*.out
+coverage.*
+task/
