@@ -5,6 +5,9 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/KentFarr/kuu-api/internal/database"
+	"github.com/KentFarr/kuu-api/internal/pterodactyl"
 )
 
 func validRequest() Request {
@@ -93,9 +96,31 @@ func TestProvisionServerRollsBackOnFailure(t *testing.T) {
 			name:   "server row insert fails",
 			inject: func(_ *fakePtero, store *fakeStore) { store.fail["CreateServer"] = true },
 		},
-		// TODO: pterodactyl user creation fails  (ptero.fail["CreateUser"])
-		// TODO: subscription insert fails        (store.fail["CreateSubscription"])
-		// TODO: pterodactyl server creation fails (ptero.fail["CreateServer"])
+		{
+			name:   "pterodactyl user creation fails",
+			inject: func(ptero *fakePtero, _ *fakeStore) { ptero.fail["CreateUser"] = true },
+		},
+		{
+			name:   "customer insert fails",
+			inject: func(_ *fakePtero, store *fakeStore) { store.fail["CreateCustomer"] = true },
+		},
+		{
+			name:   "subscription insert fails",
+			inject: func(_ *fakePtero, store *fakeStore) { store.fail["CreateSubscription"] = true },
+		},
+		{
+			name:   "no node has capacity",
+			inject: func(ptero *fakePtero, _ *fakeStore) { ptero.fail["PickLeastLoadedNode"] = true },
+		},
+		{
+			name:   "no free allocation",
+			inject: func(ptero *fakePtero, _ *fakeStore) { ptero.fail["FindFreeAllocation"] = true },
+		},
+		{
+			// A plain error isn't retried; a 422 would be.
+			name:   "pterodactyl server creation fails",
+			inject: func(ptero *fakePtero, _ *fakeStore) { ptero.fail["CreateServer"] = true },
+		},
 	}
 
 	for _, tc := range cases {
@@ -128,4 +153,177 @@ func TestProvisionServerRollsBackOnFailure(t *testing.T) {
 			}
 		})
 	}
+}
+
+// returningCustomer stores a customer who already has a Pterodactyl account.
+func returningCustomer(t *testing.T, store *fakeStore) *database.Customer {
+	t.Helper()
+	c, err := store.CreateCustomer("alice@example.com", 7, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+func TestProvisionServerReusesExistingCustomer(t *testing.T) {
+	p, ptero, store, _, queue := newTestProvisioner(t)
+	c := returningCustomer(t, store)
+
+	res, err := p.ProvisionServer(context.Background(), validRequest())
+	if err != nil {
+		t.Fatalf("ProvisionServer: %v", err)
+	}
+
+	if len(ptero.users) != 0 {
+		t.Errorf("created %d pterodactyl users for a returning customer", len(ptero.users))
+	}
+	if res.NewUser || res.UserID != 7 || res.Username != "alice" {
+		t.Errorf("result = %+v, want existing user 7/alice", res)
+	}
+	if len(store.customers) != 1 {
+		t.Errorf("customers = %d, want the existing one only", len(store.customers))
+	}
+	for _, s := range store.servers {
+		if s.CustomerID != c.ID {
+			t.Errorf("server row customer = %d, want %d", s.CustomerID, c.ID)
+		}
+	}
+	// The welcome email carries a password, and a returning customer's
+	// password wasn't changed, so none is sent.
+	if len(queue.sent) != 0 {
+		t.Errorf("sent %d welcome emails to a returning customer", len(queue.sent))
+	}
+}
+
+// Rollback must only undo what this call created: a returning customer's
+// row and panel account were there before and must survive a failure.
+func TestProvisionServerRollbackKeepsPreexistingCustomer(t *testing.T) {
+	p, _, store, _, _ := newTestProvisioner(t)
+	c := returningCustomer(t, store)
+	store.fail["CreateServer"] = true
+
+	if _, err := p.ProvisionServer(context.Background(), validRequest()); !errors.Is(err, errInjected) {
+		t.Fatalf("err = %v, want the injected failure", err)
+	}
+
+	if _, ok := store.customers[c.ID]; !ok {
+		t.Error("pre-existing customer row was deleted by rollback")
+	}
+	if len(store.subscriptions) != 0 {
+		t.Errorf("subscription rows left behind: %d", len(store.subscriptions))
+	}
+}
+
+func TestProvisionServerDNSFailureKeepsServer(t *testing.T) {
+	p, ptero, store, dns, queue := newTestProvisioner(t)
+	dns.fail["CreateCNAME"] = true
+
+	if _, err := p.ProvisionServer(context.Background(), validRequest()); err != nil {
+		t.Fatalf("ProvisionServer: %v (DNS failure must not fail provisioning)", err)
+	}
+	if len(ptero.servers) != 1 || len(store.servers) != 1 {
+		t.Errorf("servers: panel=%d db=%d, want 1 each", len(ptero.servers), len(store.servers))
+	}
+	if len(queue.sent) != 1 {
+		t.Errorf("welcome emails = %d, want 1", len(queue.sent))
+	}
+}
+
+func TestProvisionServerWithoutOptionalDeps(t *testing.T) {
+	p, _, _, _, _ := newTestProvisioner(t)
+	p.DNSClient = nil
+	p.EmailQueue = nil
+
+	if _, err := p.ProvisionServer(context.Background(), validRequest()); err != nil {
+		t.Fatalf("ProvisionServer without DNS/email: %v", err)
+	}
+}
+
+func TestProvisionServerRetriesAllocationCollision(t *testing.T) {
+	p, ptero, store, _, _ := newTestProvisioner(t)
+	ptero.createServerErrs = []error{&pterodactyl.APIError{StatusCode: 422, Body: "allocation taken"}}
+
+	if _, err := p.ProvisionServer(context.Background(), validRequest()); err != nil {
+		t.Fatalf("ProvisionServer: %v", err)
+	}
+	if ptero.createServerCalls != 2 {
+		t.Errorf("CreateServer calls = %d, want 2 (one 422, one success)", ptero.createServerCalls)
+	}
+	if len(store.servers) != 1 {
+		t.Errorf("server rows = %d, want 1", len(store.servers))
+	}
+}
+
+func TestProvisionServerRejectsInvalidRequests(t *testing.T) {
+	cases := map[string]func(*Request){
+		"unknown price ID": func(r *Request) { r.PriceID = "price_nope" },
+		"unknown game":     func(r *Request) { r.Game = "tetris" },
+		"unknown variant":  func(r *Request) { r.Variant = "bukkit" },
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			p, ptero, store, _, _ := newTestProvisioner(t)
+			req := validRequest()
+			mutate(&req)
+
+			if _, err := p.ProvisionServer(context.Background(), req); err == nil {
+				t.Fatal("expected an error")
+			}
+			if len(ptero.users)+len(ptero.servers)+len(store.customers)+len(store.subscriptions) != 0 {
+				t.Error("invalid request created resources")
+			}
+		})
+	}
+}
+
+func TestSuspendServer(t *testing.T) {
+	p, ptero, store, _, _ := newTestProvisioner(t)
+	res, err := p.ProvisionServer(context.Background(), validRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := p.SuspendServer(context.Background(), "sub_123"); err != nil {
+		t.Fatalf("SuspendServer: %v", err)
+	}
+
+	if !ptero.suspended[res.ServerID] {
+		t.Error("pterodactyl server not suspended")
+	}
+	for _, s := range store.subscriptions {
+		if s.Status != "suspended" {
+			t.Errorf("subscription status = %q, want suspended", s.Status)
+		}
+	}
+	for _, s := range store.servers {
+		if s.Status != "suspended" {
+			t.Errorf("server status = %q, want suspended", s.Status)
+		}
+	}
+}
+
+func TestSuspendServerErrors(t *testing.T) {
+	t.Run("unknown subscription", func(t *testing.T) {
+		p, _, _, _, _ := newTestProvisioner(t)
+		if err := p.SuspendServer(context.Background(), "sub_missing"); err == nil {
+			t.Error("expected an error")
+		}
+	})
+	t.Run("panel suspend fails", func(t *testing.T) {
+		p, ptero, store, _, _ := newTestProvisioner(t)
+		if _, err := p.ProvisionServer(context.Background(), validRequest()); err != nil {
+			t.Fatal(err)
+		}
+		ptero.fail["SuspendServer"] = true
+
+		if err := p.SuspendServer(context.Background(), "sub_123"); !errors.Is(err, errInjected) {
+			t.Fatalf("err = %v, want the injected failure", err)
+		}
+		// The DB must not claim the server is suspended when it isn't.
+		for _, s := range store.subscriptions {
+			if s.Status != "active" {
+				t.Errorf("subscription status = %q, want active", s.Status)
+			}
+		}
+	})
 }

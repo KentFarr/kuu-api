@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"crypto/subtle"
 	"net/http"
 	"strconv"
@@ -26,10 +27,23 @@ const adminPendingEmailsLimit = 200
 //	                                 against our DB so ops can spot drift.
 type AdminHandler struct {
 	Token   string
-	DB      *database.DB
-	Ptero   *pterodactyl.Client
-	Mailer  *email.Mailer
+	DB      adminStore
+	Ptero   adminPtero
+	Mailer  *email.Mailer // concrete: nil when SMTP isn't configured
 	NodeIDs []int
+}
+
+// adminStore is the part of *database.DB the admin endpoints use.
+type adminStore interface {
+	EnqueueEmail(toAddr, subject, body string) (int, error)
+	ResetEmailForRetry(id int) error
+	ListPendingEmails(limit int) ([]database.PendingEmail, error)
+	ListServerPteroIDs(nodeID int) ([]int, error)
+}
+
+// adminPtero is the part of *pterodactyl.Client the admin endpoints use.
+type adminPtero interface {
+	ListServersOnNode(ctx context.Context, nodeID int) ([]pterodactyl.ServerSummary, error)
 }
 
 func (h *AdminHandler) authorized(r *http.Request) bool {

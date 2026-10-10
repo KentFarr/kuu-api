@@ -53,6 +53,7 @@ type fakeEventStore struct {
 	mu       sync.Mutex
 	claimed  map[string]bool
 	released []string
+	claimErr error
 }
 
 func newFakeEventStore() *fakeEventStore {
@@ -62,6 +63,9 @@ func newFakeEventStore() *fakeEventStore {
 func (f *fakeEventStore) ClaimWebhookEvent(eventID string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.claimErr != nil {
+		return false, f.claimErr
+	}
 	if f.claimed[eventID] {
 		return false, nil
 	}
@@ -166,5 +170,180 @@ func TestWebhookProvisioningErrorReleasesEvent(t *testing.T) {
 	}
 	if len(store.released) != 1 || store.released[0] != "evt_fail" {
 		t.Errorf("released = %v, want [evt_fail] so Stripe's retry can claim it", store.released)
+	}
+}
+
+func TestWebhookRejectsBadSignatures(t *testing.T) {
+	body := checkoutCompletedEvent(t, "evt_sig")
+	unsigned := httptest.NewRequest(http.MethodPost, "/api/webhook", strings.NewReader(string(body)))
+
+	cases := map[string]*http.Request{
+		"wrong secret":   signedRequest(body, "whsec_wrong"),
+		"missing header": unsigned,
+	}
+	for name, req := range cases {
+		t.Run(name, func(t *testing.T) {
+			h, prov, store := newTestWebhookHandler()
+			rec := serve(h, req)
+
+			if rec.Code != http.StatusUnauthorized {
+				t.Errorf("status = %d, want 401", rec.Code)
+			}
+			if len(prov.provisioned) != 0 || len(store.claimed) != 0 {
+				t.Errorf("unsigned event had effects: provisioned=%d claimed=%d", len(prov.provisioned), len(store.claimed))
+			}
+		})
+	}
+}
+
+func TestWebhookRejectsOversizedBody(t *testing.T) {
+	h, prov, _ := newTestWebhookHandler()
+	body := make([]byte, maxWebhookBodyBytes+1)
+
+	rec := serve(h, signedRequest(body, testWebhookSecret))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", rec.Code)
+	}
+	if len(prov.provisioned) != 0 {
+		t.Error("oversized body was provisioned")
+	}
+}
+
+func TestWebhookRoutesEventsByType(t *testing.T) {
+	cases := []struct {
+		name          string
+		body          func(t *testing.T) []byte
+		wantSuspended []string
+		wantProvision int
+	}{
+		{
+			name: "subscription deleted suspends",
+			body: func(t *testing.T) []byte {
+				return stripeEvent(t, "evt_del", "customer.subscription.deleted",
+					map[string]any{"id": "sub_gone", "object": "subscription"})
+			},
+			wantSuspended: []string{"sub_gone"},
+		},
+		{
+			name: "payment failed suspends the invoice's subscription",
+			body: func(t *testing.T) []byte {
+				return stripeEvent(t, "evt_pf", "invoice.payment_failed", map[string]any{
+					"id": "in_1", "object": "invoice", "customer": "cus_1",
+					"parent": map[string]any{
+						"type":                 "subscription_details",
+						"subscription_details": map[string]any{"subscription": "sub_unpaid"},
+					},
+				})
+			},
+			wantSuspended: []string{"sub_unpaid"},
+		},
+		{
+			name: "payment failed without a subscription does nothing",
+			body: func(t *testing.T) []byte {
+				return stripeEvent(t, "evt_pf2", "invoice.payment_failed",
+					map[string]any{"id": "in_2", "object": "invoice"})
+			},
+		},
+		{
+			name: "checkout without an email does nothing",
+			body: func(t *testing.T) []byte {
+				return stripeEvent(t, "evt_noemail", "checkout.session.completed",
+					map[string]any{"id": "cs_2", "object": "checkout.session"})
+			},
+		},
+		{
+			name: "unknown event type is acknowledged",
+			body: func(t *testing.T) []byte {
+				return stripeEvent(t, "evt_other", "customer.created",
+					map[string]any{"id": "cus_1", "object": "customer"})
+			},
+		},
+		{
+			name:          "checkout provisions",
+			body:          func(t *testing.T) []byte { return checkoutCompletedEvent(t, "evt_co") },
+			wantProvision: 1,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, prov, _ := newTestWebhookHandler()
+			rec := serve(h, signedRequest(tc.body(t), testWebhookSecret))
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", rec.Code)
+			}
+			if strings.Join(prov.suspended, ",") != strings.Join(tc.wantSuspended, ",") {
+				t.Errorf("suspended = %v, want %v", prov.suspended, tc.wantSuspended)
+			}
+			if len(prov.provisioned) != tc.wantProvision {
+				t.Errorf("provisioned %d times, want %d", len(prov.provisioned), tc.wantProvision)
+			}
+		})
+	}
+}
+
+func TestWebhookSuspendErrorReleasesEvent(t *testing.T) {
+	h, prov, store := newTestWebhookHandler()
+	prov.suspendErr = errors.New("db down")
+	body := stripeEvent(t, "evt_del_fail", "customer.subscription.deleted",
+		map[string]any{"id": "sub_1", "object": "subscription"})
+
+	rec := serve(h, signedRequest(body, testWebhookSecret))
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+	if store.claimed["evt_del_fail"] {
+		t.Error("event still claimed after failure; Stripe's retry would be skipped")
+	}
+}
+
+func TestWebhookClaimErrorReturns500(t *testing.T) {
+	h, prov, store := newTestWebhookHandler()
+	store.claimErr = errors.New("db down")
+
+	rec := serve(h, signedRequest(checkoutCompletedEvent(t, "evt_claim"), testWebhookSecret))
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", rec.Code)
+	}
+	if len(prov.provisioned) != 0 {
+		t.Error("provisioned without a successful claim")
+	}
+}
+
+func TestWebhookPassesCheckoutFieldsToProvisioner(t *testing.T) {
+	h, prov, _ := newTestWebhookHandler()
+	body := stripeEvent(t, "evt_fields", "checkout.session.completed", map[string]any{
+		"id":               "cs_3",
+		"object":           "checkout.session",
+		"customer":         "cus_9",
+		"subscription":     "sub_9",
+		"customer_details": map[string]any{"email": "bob@example.com"},
+		"metadata": map[string]string{
+			"game": "rust", "variant": "oxide", "version": "", "subdomain": "bob", "price_id": "price_8gb",
+		},
+		"custom_fields": []map[string]any{
+			{"key": "username", "type": "text", "text": map[string]any{"value": "  bobby  "}},
+		},
+	})
+
+	if rec := serve(h, signedRequest(body, testWebhookSecret)); rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	want := provisioner.Request{
+		CustomerEmail:     "bob@example.com",
+		Game:              "rust",
+		Variant:           "oxide",
+		Subdomain:         "bob",
+		PriceID:           "price_8gb",
+		StripeSubID:       "sub_9",
+		StripeCustomerID:  "cus_9",
+		RequestedUsername: "bobby",
+	}
+	if len(prov.provisioned) != 1 || prov.provisioned[0] != want {
+		t.Errorf("provision request = %+v, want %+v", prov.provisioned, want)
 	}
 }

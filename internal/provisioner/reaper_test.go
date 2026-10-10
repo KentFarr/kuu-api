@@ -52,3 +52,67 @@ func TestReaperDeletesOnlyServersPastGracePeriod(t *testing.T) {
 		t.Errorf("pterodactyl servers remaining = %d, want 1", n)
 	}
 }
+
+func TestReaperKeepsActiveServers(t *testing.T) {
+	p, _, store, _, _ := newTestProvisioner(t)
+	if _, err := p.ProvisionServer(context.Background(), validRequest()); err != nil {
+		t.Fatal(err)
+	}
+	r := NewReaper(p)
+	r.Now = func() time.Time { return time.Now().Add(365 * 24 * time.Hour) }
+
+	r.runOnce(context.Background())
+
+	if len(store.servers) != 1 {
+		t.Error("active server was reaped")
+	}
+}
+
+func TestReaperKeepsRowWhenPanelDeleteFails(t *testing.T) {
+	p, ptero, store, _, _ := newTestProvisioner(t)
+	now := time.Now()
+	id := addSuspendedServer(store, ptero, now.Add(-30*24*time.Hour))
+	ptero.fail["DeleteServer"] = true
+
+	r := NewReaper(p)
+	r.Now = func() time.Time { return now }
+	r.runOnce(context.Background())
+
+	if _, ok := store.servers[id]; !ok {
+		t.Error("DB row deleted although the panel server still exists")
+	}
+}
+
+func TestReaperDeletesDNSRecord(t *testing.T) {
+	p, ptero, store, dns, _ := newTestProvisioner(t)
+	now := time.Now()
+	id := addSuspendedServer(store, ptero, now.Add(-30*24*time.Hour))
+	store.servers[id].Subdomain.String, store.servers[id].Subdomain.Valid = "alice", true
+
+	r := NewReaper(p)
+	r.Now = func() time.Time { return now }
+	r.runOnce(context.Background())
+
+	if len(dns.deleted) != 1 || dns.deleted[0] != "alice" {
+		t.Errorf("DNS deletes = %v, want [alice]", dns.deleted)
+	}
+	if _, ok := store.servers[id]; ok {
+		t.Error("server row not deleted")
+	}
+}
+
+func TestReaperContinuesWhenDNSDeleteFails(t *testing.T) {
+	p, ptero, store, dns, _ := newTestProvisioner(t)
+	now := time.Now()
+	id := addSuspendedServer(store, ptero, now.Add(-30*24*time.Hour))
+	store.servers[id].Subdomain.String, store.servers[id].Subdomain.Valid = "alice", true
+	dns.fail["DeleteCNAME"] = true
+
+	r := NewReaper(p)
+	r.Now = func() time.Time { return now }
+	r.runOnce(context.Background())
+
+	if _, ok := store.servers[id]; ok {
+		t.Error("server row kept although only the DNS delete failed")
+	}
+}
